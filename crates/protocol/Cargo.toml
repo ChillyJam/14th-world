@@ -1,0 +1,11 @@
+[package]
+name = "protocol"
+description = "Messages exchanged between the server and the WebAssembly client."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sim.workspace = true
+serde.workspace = true
+postcard.workspace = true

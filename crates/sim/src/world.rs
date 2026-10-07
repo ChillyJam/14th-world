@@ -1,0 +1,438 @@
+use std::collections::btree_map::Entry;
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+use crate::{Era, Rng, WorldTime};
+
+pub type EntityId = u64;
+
+/// Bump whenever [`World`]'s serialized layout changes. Snapshots written with
+/// a different version are refused rather than silently misread.
+pub const SNAPSHOT_VERSION: u32 = 1;
+
+const INITIAL_PEOPLE: usize = 4;
+const INITIAL_ANIMALS: usize = 24;
+const PERSON_SPEED: f32 = 0.6;
+const WANDER_RADIUS: f32 = 40.0;
+const MEET_RADIUS: f32 = 6.0;
+/// Minimum ticks between two counted encounters of the same pair.
+const ENCOUNTER_COOLDOWN: u64 = 60;
+const KNOWLEDGE_PER_ENCOUNTER: f64 = 0.5;
+/// Chance per waking tick that a person figures something out on their own.
+const DISCOVERY_CHANCE: f32 = 0.002;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Vec2 {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl Vec2 {
+    pub fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+
+    pub fn distance(self, other: Vec2) -> f32 {
+        ((self.x - other.x).powi(2) + (self.y - other.y).powi(2)).sqrt()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WorldConfig {
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Default for WorldConfig {
+    fn default() -> Self {
+        Self {
+            width: 1024.0,
+            height: 768.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Person {
+    pub id: EntityId,
+    pub name: String,
+    pub born_tick: u64,
+    /// Where this person sleeps and roams around.
+    pub home: Vec2,
+    pub position: Vec2,
+    pub target: Vec2,
+    pub knowledge: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Species {
+    Deer,
+    Rabbit,
+    Wolf,
+}
+
+impl Species {
+    fn speed(self) -> f32 {
+        match self {
+            Species::Deer => 0.8,
+            Species::Rabbit => 1.0,
+            Species::Wolf => 1.2,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Animal {
+    pub id: EntityId,
+    pub species: Species,
+    pub position: Vec2,
+    pub target: Vec2,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Relationship {
+    /// 0.0 = strangers, 1.0 = inseparable.
+    pub affinity: f32,
+    pub encounters: u32,
+    pub first_met: u64,
+    pub last_met: u64,
+}
+
+/// Something notable that happened during a step. The server appends these to
+/// the history log.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Event {
+    Met { a: EntityId, b: EntityId },
+    EraReached { era: Era },
+}
+
+impl Event {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Event::Met { .. } => "met",
+            Event::EraReached { .. } => "era_reached",
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SnapshotError {
+    #[error("snapshot version {found} is not supported (expected {SNAPSHOT_VERSION})")]
+    UnsupportedVersion { found: u32 },
+    #[error("malformed snapshot: {0}")]
+    Malformed(#[from] postcard::Error),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct World {
+    pub config: WorldConfig,
+    pub time: WorldTime,
+    pub era: Era,
+    /// Collective knowledge of everyone who has ever lived.
+    pub knowledge: f64,
+    pub people: Vec<Person>,
+    pub animals: Vec<Animal>,
+    /// Keyed by `(lower id, higher id)`.
+    relationships: BTreeMap<(EntityId, EntityId), Relationship>,
+    rng: Rng,
+    next_id: EntityId,
+}
+
+impl World {
+    pub fn new(seed: u64, config: WorldConfig) -> Self {
+        let mut world = Self {
+            config,
+            time: WorldTime::default(),
+            era: Era::Primitive,
+            knowledge: 0.0,
+            people: Vec::new(),
+            animals: Vec::new(),
+            relationships: BTreeMap::new(),
+            rng: Rng::new(seed),
+            next_id: 1,
+        };
+
+        let centre = Vec2::new(config.width / 2.0, config.height / 2.0);
+        for _ in 0..INITIAL_PEOPLE {
+            let id = world.alloc_id();
+            let name = world.random_name();
+            let position = Vec2::new(
+                centre.x + world.rng.range_f32(-30.0, 30.0),
+                centre.y + world.rng.range_f32(-30.0, 30.0),
+            );
+            world.people.push(Person {
+                id,
+                name,
+                born_tick: 0,
+                home: centre,
+                position,
+                target: position,
+                knowledge: 0.0,
+            });
+        }
+
+        for _ in 0..INITIAL_ANIMALS {
+            let id = world.alloc_id();
+            let species = match world.rng.below(3) {
+                0 => Species::Deer,
+                1 => Species::Rabbit,
+                _ => Species::Wolf,
+            };
+            let position = Vec2::new(
+                world.rng.range_f32(0.0, config.width),
+                world.rng.range_f32(0.0, config.height),
+            );
+            world.animals.push(Animal {
+                id,
+                species,
+                position,
+                target: position,
+            });
+        }
+
+        world
+    }
+
+    pub fn relationships(&self) -> &BTreeMap<(EntityId, EntityId), Relationship> {
+        &self.relationships
+    }
+
+    /// Advance the world by one tick (one in-world minute).
+    pub fn step(&mut self) -> Vec<Event> {
+        self.time.tick += 1;
+        let mut events = Vec::new();
+        let bounds = self.config;
+
+        // People sleep at night; animals keep roaming.
+        if !self.time.is_night() {
+            for person in &mut self.people {
+                wander(
+                    &mut person.position,
+                    &mut person.target,
+                    person.home,
+                    PERSON_SPEED,
+                    &mut self.rng,
+                    bounds,
+                );
+                if self.rng.chance(DISCOVERY_CHANCE) {
+                    person.knowledge += 1.0;
+                    self.knowledge += 1.0;
+                }
+            }
+            self.encounters(&mut events);
+        }
+
+        for animal in &mut self.animals {
+            let speed = animal.species.speed();
+            let anchor = animal.position;
+            wander(
+                &mut animal.position,
+                &mut animal.target,
+                anchor,
+                speed,
+                &mut self.rng,
+                bounds,
+            );
+        }
+
+        let era = Era::for_knowledge(self.knowledge);
+        if era > self.era {
+            self.era = era;
+            events.push(Event::EraReached { era });
+        }
+
+        events
+    }
+
+    /// People who come close form or strengthen relationships and learn from
+    /// each other. O(n²); replace with a spatial index once populations grow.
+    fn encounters(&mut self, events: &mut Vec<Event>) {
+        let tick = self.time.tick;
+        for i in 0..self.people.len() {
+            for j in (i + 1)..self.people.len() {
+                if self.people[i].position.distance(self.people[j].position) > MEET_RADIUS {
+                    continue;
+                }
+                let (a, b) = ordered(self.people[i].id, self.people[j].id);
+                let counted = match self.relationships.entry((a, b)) {
+                    Entry::Vacant(slot) => {
+                        slot.insert(Relationship {
+                            affinity: 0.1,
+                            encounters: 1,
+                            first_met: tick,
+                            last_met: tick,
+                        });
+                        events.push(Event::Met { a, b });
+                        true
+                    }
+                    Entry::Occupied(mut slot) => {
+                        let rel = slot.get_mut();
+                        if tick - rel.last_met >= ENCOUNTER_COOLDOWN {
+                            rel.encounters += 1;
+                            rel.affinity = (rel.affinity + 0.05).min(1.0);
+                            rel.last_met = tick;
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                };
+                if counted {
+                    self.people[i].knowledge += KNOWLEDGE_PER_ENCOUNTER;
+                    self.people[j].knowledge += KNOWLEDGE_PER_ENCOUNTER;
+                    self.knowledge += 2.0 * KNOWLEDGE_PER_ENCOUNTER;
+                }
+            }
+        }
+    }
+
+    pub fn to_snapshot(&self) -> Result<Vec<u8>, SnapshotError> {
+        Ok(postcard::to_stdvec(&(SNAPSHOT_VERSION, self))?)
+    }
+
+    pub fn from_snapshot(bytes: &[u8]) -> Result<Self, SnapshotError> {
+        let (version, rest): (u32, &[u8]) = postcard::take_from_bytes(bytes)?;
+        if version != SNAPSHOT_VERSION {
+            return Err(SnapshotError::UnsupportedVersion { found: version });
+        }
+        Ok(postcard::from_bytes(rest)?)
+    }
+
+    fn alloc_id(&mut self) -> EntityId {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    fn random_name(&mut self) -> String {
+        const SYLLABLES: [&str; 12] = [
+            "ka", "ru", "mi", "to", "an", "el", "zu", "ri", "ba", "no", "sa", "ul",
+        ];
+        let len = 2 + self.rng.below(2);
+        let mut name: String = (0..len)
+            .map(|_| SYLLABLES[self.rng.below(SYLLABLES.len() as u64) as usize])
+            .collect();
+        name[..1].make_ascii_uppercase();
+        name
+    }
+}
+
+fn ordered(a: EntityId, b: EntityId) -> (EntityId, EntityId) {
+    if a < b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+/// Walk towards `target`; on arrival pick a new one near `anchor`.
+fn wander(
+    pos: &mut Vec2,
+    target: &mut Vec2,
+    anchor: Vec2,
+    speed: f32,
+    rng: &mut Rng,
+    bounds: WorldConfig,
+) {
+    let dist = pos.distance(*target);
+    if dist <= speed {
+        *pos = *target;
+        *target = Vec2::new(
+            (anchor.x + rng.range_f32(-WANDER_RADIUS, WANDER_RADIUS)).clamp(0.0, bounds.width),
+            (anchor.y + rng.range_f32(-WANDER_RADIUS, WANDER_RADIUS)).clamp(0.0, bounds.height),
+        );
+    } else {
+        pos.x += (target.x - pos.x) / dist * speed;
+        pos.y += (target.y - pos.y) / dist * speed;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TICKS_PER_DAY;
+
+    fn world() -> World {
+        World::new(1234, WorldConfig::default())
+    }
+
+    #[test]
+    fn starts_small_and_primitive() {
+        let w = world();
+        assert_eq!(w.people.len(), INITIAL_PEOPLE);
+        assert!(w.people.iter().all(|p| p.knowledge == 0.0));
+        assert_eq!(w.era, Era::Primitive);
+    }
+
+    #[test]
+    fn deterministic() {
+        let mut a = world();
+        let mut b = world();
+        for _ in 0..TICKS_PER_DAY * 3 {
+            assert_eq!(a.step(), b.step());
+        }
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn people_sleep_at_night() {
+        let mut w = world();
+        // Tick 0 is midnight.
+        let before: Vec<_> = w.people.iter().map(|p| p.position).collect();
+        w.step();
+        let after: Vec<_> = w.people.iter().map(|p| p.position).collect();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn people_meet_each_other() {
+        let mut w = world();
+        let mut met = 0;
+        for _ in 0..TICKS_PER_DAY * 5 {
+            met += w
+                .step()
+                .iter()
+                .filter(|e| matches!(e, Event::Met { .. }))
+                .count();
+        }
+        assert!(met > 0, "the founding group should meet within a few days");
+        assert_eq!(met, w.relationships().len());
+    }
+
+    #[test]
+    fn entities_stay_in_bounds() {
+        let mut w = world();
+        for _ in 0..TICKS_PER_DAY * 2 {
+            w.step();
+        }
+        let in_bounds = |p: Vec2| {
+            (0.0..=w.config.width).contains(&p.x) && (0.0..=w.config.height).contains(&p.y)
+        };
+        assert!(w.people.iter().all(|p| in_bounds(p.position)));
+        assert!(w.animals.iter().all(|a| in_bounds(a.position)));
+    }
+
+    #[test]
+    fn snapshot_round_trip_resumes_identically() {
+        let mut w = world();
+        for _ in 0..TICKS_PER_DAY {
+            w.step();
+        }
+        let mut restored = World::from_snapshot(&w.to_snapshot().unwrap()).unwrap();
+        assert_eq!(restored, w);
+        for _ in 0..TICKS_PER_DAY {
+            assert_eq!(restored.step(), w.step());
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_snapshot_version() {
+        let bytes = postcard::to_stdvec(&(SNAPSHOT_VERSION + 1, world())).unwrap();
+        assert!(matches!(
+            World::from_snapshot(&bytes),
+            Err(SnapshotError::UnsupportedVersion { .. })
+        ));
+    }
+}
