@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["crates/sim", "crates/protocol", "crates/server", "crates/client"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/ChillyJam/14th-world"
+
+[workspace.dependencies]
+sim = { path = "crates/sim" }
+protocol = { path = "crates/protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+postcard = { version = "1", features = ["use-std"] }
+thiserror = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# The wasm client is downloaded by every visitor, so optimise it for size.
+[profile.release.package.client]
+opt-level = "z"

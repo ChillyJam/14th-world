@@ -1,0 +1,13 @@
+services:
+  world:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - world-data:/data
+    restart: unless-stopped
+    # Allow time for the final snapshot on shutdown.
+    stop_grace_period: 30s
+
+volumes:
+  world-data:

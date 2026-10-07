@@ -1,0 +1,7 @@
+/target
+/crates/client/dist
+/data
+*.db
+*.db-shm
+*.db-wal
+.env

@@ -1,0 +1,11 @@
+[package]
+name = "sim"
+description = "Deterministic world simulation core. Pure logic, no I/O."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+postcard.workspace = true
+thiserror.workspace = true
