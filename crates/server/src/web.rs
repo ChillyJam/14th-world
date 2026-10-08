@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
@@ -8,7 +6,6 @@ use axum::routing::get;
 use axum::Router;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 #[derive(Clone)]
@@ -18,13 +15,10 @@ pub struct AppState {
     pub shutdown: CancellationToken,
 }
 
-pub fn router(state: AppState, static_dir: &Path) -> Router {
-    let frontend =
-        ServeDir::new(static_dir).fallback(ServeFile::new(static_dir.join("index.html")));
+pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/ws", get(ws_upgrade))
         .route("/healthz", get(|| async { "ok" }))
-        .fallback_service(frontend)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

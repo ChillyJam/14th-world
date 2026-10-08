@@ -1,6 +1,6 @@
 [package]
 name = "protocol"
-description = "Messages exchanged between the server and the WebAssembly client."
+description = "Messages exchanged between the server and the native client."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

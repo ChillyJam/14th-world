@@ -1,5 +1,4 @@
 /target
-/crates/client/dist
 /data
 *.db
 *.db-shm

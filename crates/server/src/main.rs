@@ -61,18 +61,15 @@ async fn main() -> anyhow::Result<()> {
         shutdown.clone(),
     ));
 
-    let app = web::router(
-        web::AppState {
-            welcome,
-            frames: frames_rx,
-            shutdown: shutdown.clone(),
-        },
-        &config.static_dir,
-    );
+    let app = web::router(web::AppState {
+        welcome,
+        frames: frames_rx,
+        shutdown: shutdown.clone(),
+    });
     let listener = TcpListener::bind(config.bind)
         .await
         .with_context(|| format!("binding {}", config.bind))?;
-    info!(addr = %config.bind, static_dir = %config.static_dir.display(), "listening");
+    info!(addr = %config.bind, "listening");
 
     let signal = shutdown.clone();
     axum::serve(listener, app)

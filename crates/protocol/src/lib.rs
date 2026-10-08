@@ -1,8 +1,8 @@
-//! Wire format between the server and the browser client.
+//! Wire format between the server and the native client.
 //!
 //! Messages are [postcard]-encoded binary WebSocket frames. Both sides depend on
 //! this crate, so a mismatch is a compile error rather than a runtime surprise;
-//! [`PROTOCOL_VERSION`] guards against a stale cached client.
+//! [`PROTOCOL_VERSION`] guards against a client built from an older version.
 
 use serde::{Deserialize, Serialize};
 use sim::{EntityId, Era, Species, World};
