@@ -6,8 +6,8 @@
 #   make run-client SERVER=host:port   run only the client, against any server
 #
 # Builds are optimised by default. Pass PROFILE=dev for faster, unoptimised
-# builds while iterating. On Windows this needs a POSIX shell such as Git Bash
-# on PATH, which GNU make picks up automatically.
+# builds while iterating. On Windows, use make.cmd instead, which has the same
+# targets and needs no POSIX shell.
 
 PROFILE ?= release
 SERVER ?=
