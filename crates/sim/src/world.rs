@@ -55,6 +55,18 @@ const HUNT_SIGHT: f32 = 60.0;
 const HUNT_REACH: f32 = 4.0;
 /// Chance per waking tick that a hunter within reach makes the kill.
 const HUNT_CHANCE: f32 = 0.2;
+/// Wolves chase prey this far away.
+const WOLF_SIGHT: f32 = 30.0;
+/// A wolf can pounce on prey this close.
+const WOLF_REACH: f32 = 12.0;
+/// A person with nobody else this close is alone, and fair game for wolves.
+const ALONE_RADIUS: f32 = 40.0;
+/// Wolves look for prey this often, in ticks, which keeps the many-wolves
+/// scan cheap.
+const WOLF_HUNT_INTERVAL: u64 = 10;
+/// Chance per hunt that a wolf within reach of prey kills it. Wolves are not
+/// as sure of a kill as a hungry person: there are many of them.
+const WOLF_HUNT_CHANCE: f32 = 0.1;
 /// New animals appear this many times a day while the wild is below its
 /// starting numbers, so hunting thins the herds without emptying the world.
 const ANIMAL_BIRTHS_PER_DAY: usize = 2;
@@ -222,6 +234,8 @@ pub struct Relationship {
 pub enum DeathCause {
     Starvation,
     OldAge,
+    /// Killed by a wolf while alone.
+    Wolf,
 }
 
 /// Something notable that happened during a step. The server appends these to
@@ -469,6 +483,7 @@ impl World {
             self.repopulate_animals();
         }
 
+        self.predation(&mut events);
         for animal in &mut self.animals {
             let speed = animal.species.speed();
             let anchor = animal.position;
@@ -674,13 +689,13 @@ impl World {
 
     /// The nearest animal a hungry person at `here` would chase, as an index
     /// into `animals`.
-    fn nearest_prey(animals: &[Animal], here: Vec2) -> Option<usize> {
+    fn nearest_prey(animals: &[Animal], here: Vec2, sight: f32) -> Option<usize> {
         animals
             .iter()
             .enumerate()
             .filter(|(_, a)| a.species.meal().is_some())
             .map(|(i, a)| (a.position.distance(here), i))
-            .filter(|(dist, _)| *dist <= HUNT_SIGHT)
+            .filter(|(dist, _)| *dist <= sight)
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|(_, i)| i)
     }
@@ -692,7 +707,7 @@ impl World {
             if person.hunger < FORAGE_THRESHOLD {
                 continue;
             }
-            let Some(i) = Self::nearest_prey(&self.animals, person.position) else {
+            let Some(i) = Self::nearest_prey(&self.animals, person.position, HUNT_SIGHT) else {
                 continue;
             };
             let prey = &self.animals[i];
@@ -711,6 +726,75 @@ impl World {
         }
     }
 
+    /// Wolves chase the nearest deer or rabbit in sight, or a person who is
+    /// alone if they are closer, and sometimes catch it. Animal kills are not
+    /// logged: there are too many. A person killed this way dies.
+    fn predation(&mut self, events: &mut Vec<Event>) {
+        if !self.time.tick.is_multiple_of(WOLF_HUNT_INTERVAL) {
+            return;
+        }
+        let alone: Vec<bool> = self
+            .people
+            .iter()
+            .map(|p| {
+                !self
+                    .people
+                    .iter()
+                    .any(|q| q.id != p.id && q.position.distance(p.position) <= ALONE_RADIUS)
+            })
+            .collect();
+        let mut caught = Vec::new();
+        let mut killed = Vec::new();
+        for w in 0..self.animals.len() {
+            if self.animals[w].species != Species::Wolf {
+                continue;
+            }
+            let here = self.animals[w].position;
+            let prey = Self::nearest_prey(&self.animals, here, WOLF_SIGHT)
+                .map(|i| (self.animals[i].position.distance(here), i));
+            let person = self
+                .people
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| alone[*i])
+                .map(|(i, p)| (p.position.distance(here), i))
+                .filter(|(dist, _)| *dist <= WOLF_SIGHT)
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            let (dist, quarry, target) = match (prey, person) {
+                (Some((d, i)), Some((pd, _))) if d <= pd => (d, Err(i), self.animals[i].position),
+                (_, Some((d, i))) => (d, Ok(i), self.people[i].position),
+                (Some((d, i)), None) => (d, Err(i), self.animals[i].position),
+                (None, None) => continue,
+            };
+            if dist > WOLF_REACH {
+                self.animals[w].target = target;
+            } else if self.rng.chance(WOLF_HUNT_CHANCE) {
+                match quarry {
+                    Ok(i) if !killed.contains(&i) => killed.push(i),
+                    Err(i) if !caught.contains(&i) => caught.push(i),
+                    _ => {}
+                }
+            }
+        }
+        let mut index = 0;
+        self.animals.retain(|_| {
+            index += 1;
+            !caught.contains(&(index - 1))
+        });
+        let mut index = 0;
+        self.people.retain(|p| {
+            index += 1;
+            let dead = killed.contains(&(index - 1));
+            if dead {
+                events.push(Event::Died {
+                    person: p.id,
+                    cause: DeathCause::Wolf,
+                });
+            }
+            !dead
+        });
+    }
+
     /// Wild animals are born until the wild is back to its starting numbers.
     fn repopulate_animals(&mut self) {
         for _ in 0..ANIMAL_BIRTHS_PER_DAY {
@@ -718,7 +802,12 @@ impl World {
                 return;
             }
             let id = self.alloc_id();
-            let species = Species::ALL[self.rng.below(Species::ALL.len() as u64) as usize];
+            // Whichever species is scarcest, so wolves cannot crowd out their prey.
+            let count = |s: Species| self.animals.iter().filter(|a| a.species == s).count();
+            let species = Species::ALL
+                .into_iter()
+                .min_by_key(|&s| count(s))
+                .unwrap_or(Species::Deer);
             let position = Vec2::new(
                 self.rng.range_f32(0.0, self.config.width),
                 self.rng.range_f32(0.0, self.config.height),
@@ -740,7 +829,7 @@ impl World {
             let wanted = if asleep {
                 Focus::Sleeping
             } else if person.hunger >= FORAGE_THRESHOLD {
-                Self::nearest_prey(&self.animals, person.position)
+                Self::nearest_prey(&self.animals, person.position, HUNT_SIGHT)
                     .map_or(Focus::Foraging, |i| Focus::Hunting(self.animals[i].species))
             } else {
                 let load = person.carried_weight();
@@ -1235,6 +1324,7 @@ mod tests {
     #[test]
     fn the_young_do_not_die_of_old_age() {
         let mut w = world();
+        w.animals.retain(|a| a.species != Species::Wolf);
         for _ in 0..TICKS_PER_DAY * 20 {
             for p in &mut w.people {
                 p.hunger = 0.0;
@@ -1465,6 +1555,8 @@ mod tests {
         let mut born = 0;
         let mut died = 0;
         for _ in 0..TICKS_PER_DAY * 120 {
+            // Hunting makes room for new wolves, which would kill the founders.
+            w.animals.retain(|a| a.species != Species::Wolf);
             for e in w.step() {
                 match e {
                     Event::Born { child, parents } => {
@@ -1568,6 +1660,70 @@ mod tests {
             }
             assert_eq!(w.animals.len(), 1);
         }
+    }
+
+    #[test]
+    fn wolves_hunt_prey() {
+        let mut w = world();
+        w.people.clear();
+        w.animals.clear();
+        let at = Vec2::new(100.0, 100.0);
+        for species in std::iter::once(Species::Wolf).chain([Species::Rabbit; 20]) {
+            let id = w.alloc_id();
+            w.animals.push(Animal {
+                id,
+                species,
+                position: at,
+                target: at,
+            });
+        }
+        for _ in 0..TICKS_PER_DAY / ANIMAL_BIRTHS_PER_DAY as u64 - 1 {
+            w.step();
+        }
+        let rabbits = w
+            .animals
+            .iter()
+            .filter(|a| a.species == Species::Rabbit)
+            .count();
+        assert!(rabbits < 20, "the wolf should catch some rabbits");
+        assert!(w.animals.iter().any(|a| a.species == Species::Wolf));
+    }
+
+    #[test]
+    fn wolves_kill_people_who_are_alone_only() {
+        let run = |companions: usize| {
+            let mut w = world();
+            w.people.truncate(1 + companions);
+            w.animals.clear();
+            let at = w.people[0].position;
+            for p in &mut w.people {
+                p.position = at;
+                p.home = at;
+                p.target = at;
+            }
+            let id = w.alloc_id();
+            w.animals.push(Animal {
+                id,
+                species: Species::Wolf,
+                position: at,
+                target: at,
+            });
+            let mut dead = Vec::new();
+            for _ in 0..TICKS_PER_DAY / ANIMAL_BIRTHS_PER_DAY as u64 - 1 {
+                for p in &mut w.people {
+                    p.hunger = 0.0;
+                }
+                for e in w.step() {
+                    if let Event::Died { person, cause } = e {
+                        assert_eq!(cause, DeathCause::Wolf);
+                        dead.push(person);
+                    }
+                }
+            }
+            dead
+        };
+        assert!(!run(0).is_empty(), "a lone person near a wolf should die");
+        assert!(run(1).is_empty(), "a pair is safe from a lone wolf");
     }
 
     #[test]

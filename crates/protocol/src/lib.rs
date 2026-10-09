@@ -146,6 +146,7 @@ impl EventLog {
                     match cause {
                         DeathCause::Starvation => "starvation",
                         DeathCause::OldAge => "old age",
+                        DeathCause::Wolf => "a wolf attack",
                     }
                 ),
                 vec![person],
