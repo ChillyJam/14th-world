@@ -59,6 +59,8 @@ const HUNT_CHANCE: f32 = 0.2;
 const WOLF_SIGHT: f32 = 30.0;
 /// A wolf can pounce on prey this close.
 const WOLF_REACH: f32 = 12.0;
+/// A person with nobody else this close is alone, and fair game for wolves.
+const ALONE_RADIUS: f32 = 40.0;
 /// Wolves look for prey this often, in ticks, which keeps the many-wolves
 /// scan cheap.
 const WOLF_HUNT_INTERVAL: u64 = 10;
@@ -232,6 +234,8 @@ pub struct Relationship {
 pub enum DeathCause {
     Starvation,
     OldAge,
+    /// Killed by a wolf while alone.
+    Wolf,
 }
 
 /// Something notable that happened during a step. The server appends these to
@@ -479,7 +483,7 @@ impl World {
             self.repopulate_animals();
         }
 
-        self.predation();
+        self.predation(&mut events);
         for animal in &mut self.animals {
             let speed = animal.species.speed();
             let anchor = animal.position;
@@ -722,34 +726,72 @@ impl World {
         }
     }
 
-    /// Wolves chase the nearest deer or rabbit in sight and sometimes catch
-    /// it. Kills are not logged: there are too many.
-    fn predation(&mut self) {
+    /// Wolves chase the nearest deer or rabbit in sight, or a person who is
+    /// alone if they are closer, and sometimes catch it. Animal kills are not
+    /// logged: there are too many. A person killed this way dies.
+    fn predation(&mut self, events: &mut Vec<Event>) {
         if !self.time.tick.is_multiple_of(WOLF_HUNT_INTERVAL) {
             return;
         }
+        let alone: Vec<bool> = self
+            .people
+            .iter()
+            .map(|p| {
+                !self
+                    .people
+                    .iter()
+                    .any(|q| q.id != p.id && q.position.distance(p.position) <= ALONE_RADIUS)
+            })
+            .collect();
         let mut caught = Vec::new();
+        let mut killed = Vec::new();
         for w in 0..self.animals.len() {
             if self.animals[w].species != Species::Wolf {
                 continue;
             }
             let here = self.animals[w].position;
-            let Some(i) = Self::nearest_prey(&self.animals, here, WOLF_SIGHT) else {
-                continue;
+            let prey = Self::nearest_prey(&self.animals, here, WOLF_SIGHT)
+                .map(|i| (self.animals[i].position.distance(here), i));
+            let person = self
+                .people
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| alone[*i])
+                .map(|(i, p)| (p.position.distance(here), i))
+                .filter(|(dist, _)| *dist <= WOLF_SIGHT)
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            let (dist, quarry, target) = match (prey, person) {
+                (Some((d, i)), Some((pd, _))) if d <= pd => (d, Err(i), self.animals[i].position),
+                (_, Some((d, i))) => (d, Ok(i), self.people[i].position),
+                (Some((d, i)), None) => (d, Err(i), self.animals[i].position),
+                (None, None) => continue,
             };
-            let prey = self.animals[i].position;
-            if prey.distance(here) <= WOLF_REACH {
-                if !caught.contains(&i) && self.rng.chance(WOLF_HUNT_CHANCE) {
-                    caught.push(i);
+            if dist > WOLF_REACH {
+                self.animals[w].target = target;
+            } else if self.rng.chance(WOLF_HUNT_CHANCE) {
+                match quarry {
+                    Ok(i) if !killed.contains(&i) => killed.push(i),
+                    Err(i) if !caught.contains(&i) => caught.push(i),
+                    _ => {}
                 }
-            } else {
-                self.animals[w].target = prey;
             }
         }
         let mut index = 0;
         self.animals.retain(|_| {
             index += 1;
             !caught.contains(&(index - 1))
+        });
+        let mut index = 0;
+        self.people.retain(|p| {
+            index += 1;
+            let dead = killed.contains(&(index - 1));
+            if dead {
+                events.push(Event::Died {
+                    person: p.id,
+                    cause: DeathCause::Wolf,
+                });
+            }
+            !dead
         });
     }
 
@@ -1282,6 +1324,7 @@ mod tests {
     #[test]
     fn the_young_do_not_die_of_old_age() {
         let mut w = world();
+        w.animals.retain(|a| a.species != Species::Wolf);
         for _ in 0..TICKS_PER_DAY * 20 {
             for p in &mut w.people {
                 p.hunger = 0.0;
@@ -1512,6 +1555,8 @@ mod tests {
         let mut born = 0;
         let mut died = 0;
         for _ in 0..TICKS_PER_DAY * 120 {
+            // Hunting makes room for new wolves, which would kill the founders.
+            w.animals.retain(|a| a.species != Species::Wolf);
             for e in w.step() {
                 match e {
                     Event::Born { child, parents } => {
@@ -1642,6 +1687,43 @@ mod tests {
             .count();
         assert!(rabbits < 20, "the wolf should catch some rabbits");
         assert!(w.animals.iter().any(|a| a.species == Species::Wolf));
+    }
+
+    #[test]
+    fn wolves_kill_people_who_are_alone_only() {
+        let run = |companions: usize| {
+            let mut w = world();
+            w.people.truncate(1 + companions);
+            w.animals.clear();
+            let at = w.people[0].position;
+            for p in &mut w.people {
+                p.position = at;
+                p.home = at;
+                p.target = at;
+            }
+            let id = w.alloc_id();
+            w.animals.push(Animal {
+                id,
+                species: Species::Wolf,
+                position: at,
+                target: at,
+            });
+            let mut dead = Vec::new();
+            for _ in 0..TICKS_PER_DAY / ANIMAL_BIRTHS_PER_DAY as u64 - 1 {
+                for p in &mut w.people {
+                    p.hunger = 0.0;
+                }
+                for e in w.step() {
+                    if let Event::Died { person, cause } = e {
+                        assert_eq!(cause, DeathCause::Wolf);
+                        dead.push(person);
+                    }
+                }
+            }
+            dead
+        };
+        assert!(!run(0).is_empty(), "a lone person near a wolf should die");
+        assert!(run(1).is_empty(), "a pair is safe from a lone wolf");
     }
 
     #[test]
