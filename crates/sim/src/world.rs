@@ -13,8 +13,9 @@ pub type EntityId = u64;
 pub const SNAPSHOT_VERSION: u32 = 5;
 
 const INITIAL_PEOPLE: usize = 4;
-/// The world is this many times wider and taller than the original 1024×768.
-const WORLD_SCALE: f32 = 10.0;
+/// The world is this many times wider and taller than the original 1024×768,
+/// so its area is roughly 1000× what it was at scale 10.
+const WORLD_SCALE: f32 = 316.0;
 const INITIAL_ANIMALS: usize = 240;
 const PERSON_SPEED: f32 = 0.6;
 const WANDER_RADIUS: f32 = 40.0;
