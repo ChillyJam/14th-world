@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 use protocol::WorldView;
+use sim::EntityId;
 
 const DEFAULT_SERVER: &str = "127.0.0.1:8080";
 
@@ -30,11 +31,13 @@ pub type Shared = Arc<Mutex<State>>;
 
 struct App {
     state: Shared,
+    /// The person or animal whose stats are shown, if any.
+    selected: Option<EntityId>,
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        render::draw(ui, &net::lock(&self.state));
+        render::draw(ui, &net::lock(&self.state), &mut self.selected);
     }
 }
 
@@ -63,7 +66,10 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             net::spawn(url, state.clone(), cc.egui_ctx.clone());
-            Ok(Box::new(App { state }))
+            Ok(Box::new(App {
+                state,
+                selected: None,
+            }))
         }),
     )
 }
