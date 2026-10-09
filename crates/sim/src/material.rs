@@ -13,12 +13,16 @@ pub enum Material {
     Copper,
     Tin,
     Iron,
+    // Foraged food. Appended after the original materials so saved worlds keep their ids.
+    Berries,
+    Mushrooms,
+    Roots,
     /// Not found in the wild: people plant and harvest it from fields.
     Grain,
 }
 
 impl Material {
-    pub const ALL: [Material; 8] = [
+    pub const ALL: [Material; 11] = [
         Material::Wood,
         Material::Stone,
         Material::Flint,
@@ -26,6 +30,9 @@ impl Material {
         Material::Copper,
         Material::Tin,
         Material::Iron,
+        Material::Berries,
+        Material::Mushrooms,
+        Material::Roots,
         Material::Grain,
     ];
 
@@ -38,6 +45,9 @@ impl Material {
             Material::Copper => "Copper",
             Material::Tin => "Tin",
             Material::Iron => "Iron",
+            Material::Berries => "Berries",
+            Material::Mushrooms => "Mushrooms",
+            Material::Roots => "Roots",
             Material::Grain => "Grain",
         }
     }
@@ -52,6 +62,9 @@ impl Material {
             Material::Copper => "Copper ore",
             Material::Tin => "Tin ore",
             Material::Iron => "Iron ore",
+            Material::Berries => "Berry bush",
+            Material::Mushrooms => "Mushroom patch",
+            Material::Roots => "Root patch",
             Material::Grain => "Field",
         }
     }
@@ -59,11 +72,24 @@ impl Material {
     /// The first era in which people can gather this material.
     pub fn era(self) -> Era {
         match self {
-            Material::Wood | Material::Stone | Material::Flint => Era::Primitive,
+            Material::Wood
+            | Material::Stone
+            | Material::Flint
+            | Material::Berries
+            | Material::Mushrooms
+            | Material::Roots => Era::Primitive,
             Material::Clay | Material::Grain => Era::Neolithic,
             Material::Copper | Material::Tin => Era::BronzeAge,
             Material::Iron => Era::IronAge,
         }
+    }
+
+    /// Whether this is food gathered by foraging rather than a raw material.
+    pub fn is_forage(self) -> bool {
+        matches!(
+            self,
+            Material::Berries | Material::Mushrooms | Material::Roots
+        )
     }
 
     /// Units a fresh deposit holds.
@@ -75,15 +101,18 @@ impl Material {
             Material::Clay => 40,
             Material::Copper | Material::Tin => 30,
             Material::Iron => 50,
+            Material::Berries => 12,
+            Material::Mushrooms => 8,
+            Material::Roots => 10,
             Material::Grain => 10,
         }
     }
 
-    /// Units a deposit regains each day. Only trees and fields grow back.
+    /// Units a deposit regains each day. Trees, foraged plants and fields grow back.
     pub fn regrowth_per_day(self) -> u32 {
         match self {
-            Material::Wood => 1,
-            Material::Grain => 2,
+            Material::Wood | Material::Roots => 1,
+            Material::Berries | Material::Mushrooms | Material::Grain => 2,
             _ => 0,
         }
     }
@@ -104,6 +133,9 @@ impl Material {
             Material::Copper => 5,
             Material::Tin => 3,
             Material::Iron => 5,
+            Material::Berries => 20,
+            Material::Mushrooms => 12,
+            Material::Roots => 12,
             Material::Grain => 0,
         }
     }
@@ -114,6 +146,7 @@ impl Material {
         match self {
             Material::Wood => 3,
             Material::Stone | Material::Flint => 1,
+            Material::Berries | Material::Mushrooms | Material::Roots => 2,
             _ => 0,
         }
     }

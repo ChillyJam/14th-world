@@ -6,8 +6,9 @@ relationships and learn from each other, and their collective knowledge
 slowly carries them from the Primitive era towards the Modern day.
 
 The world is scattered with materials: trees, rocks and flint from the start,
+plus berries, mushrooms and roots to forage,
 then clay, copper, tin and iron ore that people can only work once they reach
-the right era. People gather from deposits they pass. Trees grow back, but
+the right era. People gather from deposits they pass. Trees and foraged plants grow back, but
 everything dug from the ground eventually runs out.
 
 The server is meant to run unattended for months. All state lives in SQLite,
