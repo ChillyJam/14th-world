@@ -1,7 +1,6 @@
-use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
-use axum::response::IntoResponse;
+use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::Router;
 use tokio::sync::watch;
@@ -10,13 +9,17 @@ use tower_http::trace::TraceLayer;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub welcome: Bytes,
-    pub frames: watch::Receiver<Bytes>,
+    pub welcome: String,
+    pub frames: watch::Receiver<String>,
     pub shutdown: CancellationToken,
 }
 
+/// The browser client, compiled into the binary so the server is one file.
+const INDEX_HTML: &str = include_str!("../assets/index.html");
+
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/", get(|| async { Html(INDEX_HTML) }))
         .route("/ws", get(ws_upgrade))
         .route("/healthz", get(|| async { "ok" }))
         .layer(TraceLayer::new_for_http())
@@ -36,7 +39,7 @@ async fn stream_frames(mut socket: WebSocket, state: AppState) {
         shutdown,
     } = state;
 
-    if socket.send(Message::Binary(welcome)).await.is_err() {
+    if socket.send(Message::Text(welcome.into())).await.is_err() {
         return;
     }
 
@@ -48,7 +51,7 @@ async fn stream_frames(mut socket: WebSocket, state: AppState) {
                     break;
                 }
                 let frame = frames.borrow_and_update().clone();
-                if socket.send(Message::Binary(frame)).await.is_err() {
+                if socket.send(Message::Text(frame.into())).await.is_err() {
                     break;
                 }
             }

@@ -4,7 +4,7 @@ mod engine;
 mod web;
 
 use anyhow::Context;
-use protocol::{ServerMsg, PROTOCOL_VERSION};
+use protocol::{Catalog, ServerMsg, PROTOCOL_VERSION};
 use sim::{World, WorldConfig};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -48,8 +48,8 @@ async fn main() -> anyhow::Result<()> {
         protocol_version: PROTOCOL_VERSION,
         world_width: world.config.width,
         world_height: world.config.height,
-    })
-    .into();
+        catalog: Catalog::new(),
+    });
     let (frames_tx, frames_rx) = watch::channel(engine::frame(&world));
     let shutdown = CancellationToken::new();
 
