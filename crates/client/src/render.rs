@@ -1,13 +1,13 @@
 //! Draws the latest [`State`] into the window, and lets the user click a
-//! person or animal to see its stats.
+//! person, animal or material deposit to see its stats.
 
 use std::collections::HashMap;
 
 use eframe::egui::{
     self, Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, Vec2,
 };
-use protocol::{AnimalView, PersonView, WorldView};
-use sim::{EntityId, Species, WorldTime, DAYS_PER_YEAR, TICKS_PER_DAY};
+use protocol::{AnimalView, DepositView, PersonView, WorldView};
+use sim::{EntityId, Era, Material, Species, WorldTime, DAYS_PER_YEAR, TICKS_PER_DAY};
 
 use crate::State;
 
@@ -31,6 +31,10 @@ pub fn draw(ui: &mut egui::Ui, state: &State, selected: &mut Option<EntityId>) {
         let to_screen = |x: f32, y: f32| world.min + Vec2::new(x, y) * scale;
 
         painter.rect_filled(world, 0.0, ground_colour(view.daylight));
+
+        for deposit in &view.deposits {
+            draw_deposit(painter, deposit, to_screen(deposit.x, deposit.y));
+        }
 
         let positions: HashMap<EntityId, Pos2> = view
             .people
@@ -115,6 +119,7 @@ pub fn draw(ui: &mut egui::Ui, state: &State, selected: &mut Option<EntityId>) {
                         .show(ui.ctx(), |ui| match entity {
                             Selected::Person(person) => person_stats(ui, view, person),
                             Selected::Animal(animal) => animal_stats(ui, animal),
+                            Selected::Deposit(deposit) => deposit_stats(ui, view, deposit),
                         });
                     if !open {
                         *selected = None;
@@ -140,18 +145,22 @@ pub fn draw(ui: &mut egui::Ui, state: &State, selected: &mut Option<EntityId>) {
 enum Selected<'a> {
     Person(&'a PersonView),
     Animal(&'a AnimalView),
+    Deposit(&'a DepositView),
 }
 
 impl<'a> Selected<'a> {
     fn find(view: &'a WorldView, id: EntityId) -> Option<Self> {
         let person = view.people.iter().find(|p| p.id == id).map(Self::Person);
-        person.or_else(|| view.animals.iter().find(|a| a.id == id).map(Self::Animal))
+        person
+            .or_else(|| view.animals.iter().find(|a| a.id == id).map(Self::Animal))
+            .or_else(|| view.deposits.iter().find(|d| d.id == id).map(Self::Deposit))
     }
 
     fn position(self) -> (f32, f32) {
         match self {
             Self::Person(p) => (p.x, p.y),
             Self::Animal(a) => (a.x, a.y),
+            Self::Deposit(d) => (d.x, d.y),
         }
     }
 
@@ -159,20 +168,27 @@ impl<'a> Selected<'a> {
         match self {
             Self::Person(p) => p.name.clone(),
             Self::Animal(a) => format!("{} #{}", a.species.name(), a.id),
+            Self::Deposit(d) => format!("{} #{}", d.material.deposit_name(), d.id),
         }
     }
 }
 
 /// The person or animal closest to `pointer`, if any is within [`PICK_RADIUS`].
+/// Otherwise the closest deposit, so a person standing by a tree stays easy
+/// to click.
 fn pick(view: &WorldView, to_screen: impl Fn(f32, f32) -> Pos2, pointer: Pos2) -> Option<EntityId> {
+    let nearest = |candidates: Vec<(EntityId, f32, f32)>| {
+        candidates
+            .into_iter()
+            .map(|(id, x, y)| (id, to_screen(x, y).distance(pointer)))
+            .filter(|&(_, dist)| dist <= PICK_RADIUS)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(id, _)| id)
+    };
     let people = view.people.iter().map(|p| (p.id, p.x, p.y));
     let animals = view.animals.iter().map(|a| (a.id, a.x, a.y));
-    people
-        .chain(animals)
-        .map(|(id, x, y)| (id, to_screen(x, y).distance(pointer)))
-        .filter(|&(_, dist)| dist <= PICK_RADIUS)
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(id, _)| id)
+    nearest(people.chain(animals).collect())
+        .or_else(|| nearest(view.deposits.iter().map(|d| (d.id, d.x, d.y)).collect()))
 }
 
 fn person_stats(ui: &mut egui::Ui, view: &WorldView, person: &PersonView) {
@@ -196,6 +212,7 @@ fn person_stats(ui: &mut egui::Ui, view: &WorldView, person: &PersonView) {
             format!("{:.1} ({share:.0}% of all)", person.knowledge),
         );
         stat(ui, "Has met", format!("{} people", person.acquaintances));
+        stat(ui, "Carrying", format_inventory(&person.inventory));
         stat(ui, "Position", format!("{:.0}, {:.0}", person.x, person.y));
     });
 
@@ -250,6 +267,52 @@ fn animal_stats(ui: &mut egui::Ui, animal: &AnimalView) {
     });
 }
 
+fn deposit_stats(ui: &mut egui::Ui, view: &WorldView, deposit: &DepositView) {
+    let material = deposit.material;
+    egui::Grid::new("deposit").num_columns(2).show(ui, |ui| {
+        stat(ui, "Material", material.name());
+        stat(
+            ui,
+            "Left",
+            format!("{} of {}", deposit.amount, material.capacity()),
+        );
+        stat(
+            ui,
+            "Regrows",
+            match material.regrowth_per_day() {
+                0 => "Never".to_owned(),
+                n => format!("{n} per day"),
+            },
+        );
+        stat(ui, "Gatherable", gatherable(material, view.era));
+        stat(
+            ui,
+            "Position",
+            format!("{:.0}, {:.0}", deposit.x, deposit.y),
+        );
+    });
+}
+
+fn gatherable(material: Material, era: Era) -> String {
+    if material.era() <= era {
+        "Yes".to_owned()
+    } else {
+        format!("From the {}", material.era().name())
+    }
+}
+
+/// E.g. "3 Wood, 1 Flint", or "Nothing".
+fn format_inventory(inventory: &[(Material, u32)]) -> String {
+    if inventory.is_empty() {
+        return "Nothing".to_owned();
+    }
+    inventory
+        .iter()
+        .map(|(material, n)| format!("{n} {}", material.name()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn stat(ui: &mut egui::Ui, label: &str, value: impl Into<egui::WidgetText>) {
     ui.weak(label);
     ui.label(value);
@@ -261,6 +324,35 @@ fn animal_style(species: Species) -> (Color32, f32) {
         Species::Deer => (Color32::from_rgb(168, 116, 58), 5.0),
         Species::Rabbit => (Color32::from_rgb(230, 224, 212), 3.0),
         Species::Wolf => (Color32::from_rgb(107, 111, 122), 5.0),
+    }
+}
+
+/// Trees are round, everything dug out of the ground is square. Exhausted
+/// deposits fade out until (if ever) they grow back.
+fn draw_deposit(painter: &egui::Painter, deposit: &DepositView, centre: Pos2) {
+    let (colour, size) = deposit_style(deposit.material);
+    let colour = if deposit.amount == 0 {
+        colour.gamma_multiply(0.3)
+    } else {
+        colour
+    };
+    if deposit.material == Material::Wood {
+        painter.circle_filled(centre, size / 2.0, colour);
+    } else {
+        let square = Rect::from_center_size(centre, Vec2::splat(size));
+        painter.rect_filled(square, 1.0, colour);
+    }
+}
+
+fn deposit_style(material: Material) -> (Color32, f32) {
+    match material {
+        Material::Wood => (Color32::from_rgb(46, 94, 52), 9.0),
+        Material::Stone => (Color32::from_rgb(150, 150, 140), 7.0),
+        Material::Flint => (Color32::from_rgb(60, 64, 78), 5.0),
+        Material::Clay => (Color32::from_rgb(178, 98, 64), 7.0),
+        Material::Copper => (Color32::from_rgb(196, 112, 56), 6.0),
+        Material::Tin => (Color32::from_rgb(196, 204, 212), 6.0),
+        Material::Iron => (Color32::from_rgb(120, 60, 50), 6.0),
     }
 }
 
@@ -301,7 +393,6 @@ fn ground_colour(daylight: f32) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sim::Era;
 
     fn view() -> WorldView {
         let person = |id, x, y| PersonView {
@@ -312,6 +403,14 @@ mod tests {
             born_tick: 0,
             knowledge: 0.0,
             acquaintances: 0,
+            inventory: vec![],
+        };
+        let deposit = |id, x, y| DepositView {
+            id,
+            material: Material::Wood,
+            x,
+            y,
+            amount: 5,
         };
         WorldView {
             tick: 0,
@@ -328,8 +427,36 @@ mod tests {
                 x: 14.0,
                 y: 10.0,
             }],
+            deposits: vec![deposit(4, 12.0, 10.0), deposit(5, 50.0, 10.0)],
             bonds: vec![],
         }
+    }
+
+    #[test]
+    fn people_and_animals_win_over_deposits() {
+        let identity = |x, y| Pos2::new(x, y);
+        let v = view();
+        // Right on the tree, but the person beside it is still in range.
+        assert_eq!(pick(&v, identity, Pos2::new(12.0, 10.0)), Some(1));
+        assert_eq!(pick(&v, identity, Pos2::new(51.0, 10.0)), Some(5));
+    }
+
+    #[test]
+    fn inventory_lists_what_is_carried() {
+        assert_eq!(format_inventory(&[]), "Nothing");
+        assert_eq!(
+            format_inventory(&[(Material::Wood, 3), (Material::Flint, 1)]),
+            "3 Wood, 1 Flint"
+        );
+    }
+
+    #[test]
+    fn later_materials_say_when_they_open_up() {
+        assert_eq!(gatherable(Material::Stone, Era::Primitive), "Yes");
+        assert_eq!(
+            gatherable(Material::Copper, Era::Neolithic),
+            "From the Bronze Age"
+        );
     }
 
     #[test]
