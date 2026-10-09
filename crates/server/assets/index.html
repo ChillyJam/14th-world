@@ -230,14 +230,16 @@ function draw() {
 
   const positions = new Map(view.people.map((p) => [p.id, toScreen(p.x, p.y)]));
   ctx.lineWidth = 1.5;
-  for (const bond of view.bonds) {
-    const a = positions.get(bond.a), b = positions.get(bond.b);
-    if (!a || !b) continue;
-    ctx.strokeStyle = `rgba(255,120,160,${Math.min(Math.max(bond.affinity, 0), 1)})`;
-    ctx.beginPath();
-    ctx.moveTo(a[0], a[1]);
-    ctx.lineTo(b[0], b[1]);
-    ctx.stroke();
+  const hovered = view.bonds.find((b) => b.a === hoveredBond?.a && b.b === hoveredBond?.b);
+  if (hovered) {
+    const a = positions.get(hovered.a), b = positions.get(hovered.b);
+    if (a && b) {
+      ctx.strokeStyle = `rgba(255,120,160,${Math.max(Math.min(hovered.affinity, 1), 0.3)})`;
+      ctx.beginPath();
+      ctx.moveTo(a[0], a[1]);
+      ctx.lineTo(b[0], b[1]);
+      ctx.stroke();
+    }
   }
 
   for (const a of view.animals) {
@@ -434,8 +436,10 @@ function row(table, label, value) {
   table.append(tr);
 }
 
+let hoveredBond = null;
+
 function updatePanel(entity) {
-  if (!entity) { panel.hidden = true; return; }
+  if (!entity) { panel.hidden = true; hoveredBond = null; return; }
   const { kind, item } = entity;
   const table = el("table");
   let title;
@@ -493,6 +497,10 @@ function updatePanel(entity) {
         aff.append(bar(bond.affinity, "bond"));
         aff.title = `Affinity ${bond.affinity.toFixed(2)}`;
         tr.append(el("td", name), aff, met);
+        tr.dataset.a = bond.a;
+        tr.dataset.b = bond.b;
+        tr.addEventListener("mouseenter", () => { hoveredBond = { a: bond.a, b: bond.b }; });
+        tr.addEventListener("mouseleave", () => { hoveredBond = null; });
         t.append(tr);
       }
       children.push(el("h4", "Relationships"), t);
@@ -501,6 +509,11 @@ function updatePanel(entity) {
 
   document.getElementById("title").textContent = title;
   document.getElementById("stats").replaceChildren(...children);
+  // Rows are rebuilt on every update, so re-derive the hover from the pointer.
+  hoveredBond = null;
+  for (const tr of document.querySelectorAll("#stats tr[data-a]")) {
+    if (tr.matches(":hover")) hoveredBond = { a: Number(tr.dataset.a), b: Number(tr.dataset.b) };
+  }
   panel.hidden = false;
 }
 
