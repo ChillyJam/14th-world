@@ -39,7 +39,7 @@ pub async fn run(
                         Event::Died { person, cause } => {
                             info!(tick = world.time.tick, person, ?cause, "someone died");
                         }
-                        Event::Met { .. } => {}
+                        Event::Met { .. } | Event::Born { .. } => {}
                     }
                     pending.push((world.time.tick, event));
                 }

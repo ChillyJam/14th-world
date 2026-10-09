@@ -16,5 +16,5 @@ pub use rng::Rng;
 pub use time::{WorldTime, DAYS_PER_YEAR, TICKS_PER_DAY};
 pub use world::{
     Animal, DeathCause, EntityId, Event, Person, Relationship, SnapshotError, Species, Vec2, World,
-    WorldConfig, CARRY_LIMIT, SNAPSHOT_VERSION,
+    WorldConfig, CARRY_LIMIT, MAX_PEOPLE, SNAPSHOT_VERSION,
 };

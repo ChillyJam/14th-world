@@ -43,7 +43,7 @@
 <script>
 "use strict";
 
-const PROTOCOL_VERSION = 5;
+const PROTOCOL_VERSION = 6;
 const NIGHT_SKY = [10, 14, 35];
 const DAY_GRASS = [104, 158, 86];
 const PERSON = "#ffd166";
@@ -445,6 +445,10 @@ function updatePanel(entity) {
     const share = view.knowledge > 0 ? (item.knowledge / view.knowledge) * 100 : 0;
     row(table, "Age", formatDuration(Math.max(view.tick - item.born_tick, 0)));
     row(table, "Born", formatDate(item.born_tick));
+    if (item.parents) {
+      const names = item.parents.map((id) => view.people.find((p) => p.id === id)?.name ?? `#${id}`);
+      row(table, "Parents", names.join(" and "));
+    }
     row(table, "Status", asleep ? "Asleep" : "Awake");
     row(table, "Knowledge", `${item.knowledge.toFixed(1)} (${share.toFixed(0)}% of all)`);
     const hunger = el("span");
