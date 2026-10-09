@@ -5,11 +5,13 @@
 //! given the same seed and the same number of steps, two worlds are identical.
 
 mod era;
+mod material;
 mod rng;
 mod time;
 mod world;
 
 pub use era::Era;
+pub use material::{Deposit, Material};
 pub use rng::Rng;
 pub use time::{WorldTime, DAYS_PER_YEAR, TICKS_PER_DAY};
 pub use world::{

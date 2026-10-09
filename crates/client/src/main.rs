@@ -31,7 +31,7 @@ pub type Shared = Arc<Mutex<State>>;
 
 struct App {
     state: Shared,
-    /// The person or animal whose stats are shown, if any.
+    /// The person, animal or deposit whose stats are shown, if any.
     selected: Option<EntityId>,
 }
 
