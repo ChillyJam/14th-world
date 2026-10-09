@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use protocol::{ServerMsg, WorldView};
+use std::sync::{Arc, Mutex};
+
+use protocol::{EventLog, ServerMsg, WorldView};
 use sim::{Event, World};
 use tokio::sync::watch;
 use tokio::time::{interval, MissedTickBehavior};
@@ -18,6 +20,7 @@ pub async fn run(
     db: Db,
     config: Config,
     frames: watch::Sender<String>,
+    log: Arc<Mutex<EventLog>>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     let mut ticker = interval(Duration::from_secs_f64(1.0 / config.tick_rate_hz));
@@ -31,7 +34,8 @@ pub async fn run(
         tokio::select! {
             _ = shutdown.cancelled() => break,
             _ = ticker.tick() => {
-                for event in world.step() {
+                let events = world.step();
+                for event in events.iter().cloned() {
                     match &event {
                         Event::EraReached { era } => {
                             info!(tick = world.time.tick, era = era.name(), "new era reached");
@@ -43,7 +47,11 @@ pub async fn run(
                     }
                     pending.push((world.time.tick, event));
                 }
-                frames.send_replace(frame(&world));
+                // Record before publishing, so a frame never announces log
+                // entries that sockets cannot read yet.
+                let mut log = log.lock().expect("log lock poisoned");
+                log.record(&world, &events);
+                frames.send_replace(frame(&world, log.next_seq()));
             }
             _ = snapshot_timer.tick() => persist(&db, &world, &mut pending, &config).await,
         }
@@ -55,8 +63,8 @@ pub async fn run(
     Ok(())
 }
 
-pub fn frame(world: &World) -> String {
-    protocol::encode(&ServerMsg::Frame(WorldView::from(world)))
+pub fn frame(world: &World, log_seq: u64) -> String {
+    protocol::encode(&ServerMsg::Frame(WorldView::new(world, log_seq)))
 }
 
 /// A failed periodic save must not kill a long-running world: the events stay

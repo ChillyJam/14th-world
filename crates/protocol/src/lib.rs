@@ -7,12 +7,15 @@
 //!
 //! [`Welcome`]: ServerMsg::Welcome
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
-use sim::{EntityId, Era, Material, Species, World};
+use sim::{DeathCause, EntityId, Era, Event, Material, Species, World};
 
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
+
+/// How many log entries the server remembers for newly connected clients.
+pub const LOG_CAPACITY: usize = 2000;
 
 /// Relationships weaker than this are not sent to the client.
 const MIN_VISIBLE_AFFINITY: f32 = 0.15;
@@ -27,6 +30,116 @@ pub enum ServerMsg {
         catalog: Catalog,
     },
     Frame(WorldView),
+    /// Log entries the client has not seen yet, oldest first. Sent right after
+    /// the frame that announced them (see [`WorldView::log_seq`]).
+    Log(Vec<LogEntry>),
+}
+
+/// One line of the world's history. The text is written when the event
+/// happens, so it still reads correctly after the people in it have died.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LogEntry {
+    /// Increases by one per entry, for the life of the server.
+    pub seq: u64,
+    pub tick: u64,
+    pub text: String,
+    /// Everyone the entry is about, so the client can build per-entity logs.
+    pub involved: Vec<EntityId>,
+}
+
+/// The most recent [`LOG_CAPACITY`] entries.
+#[derive(Debug, Default)]
+pub struct EventLog {
+    entries: VecDeque<LogEntry>,
+    next_seq: u64,
+    names: HashMap<EntityId, String>,
+}
+
+impl EventLog {
+    pub fn new(world: &World) -> Self {
+        let mut log = Self::default();
+        log.remember_names(world);
+        log
+    }
+
+    /// Records the events of the step that just ran. Call after every step,
+    /// with the world as it is afterwards.
+    pub fn record(&mut self, world: &World, events: &[Event]) {
+        self.remember_names(world);
+        for event in events {
+            let (text, involved) = self.describe(event);
+            self.entries.push_back(LogEntry {
+                seq: self.next_seq,
+                tick: world.time.tick,
+                text,
+                involved,
+            });
+            self.next_seq += 1;
+        }
+        while self.entries.len() > LOG_CAPACITY {
+            self.entries.pop_front();
+        }
+    }
+
+    /// The sequence number the next entry will get.
+    pub fn next_seq(&self) -> u64 {
+        self.next_seq
+    }
+
+    /// Everything still remembered with a sequence number of `seq` or more.
+    pub fn since(&self, seq: u64) -> Vec<LogEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.seq >= seq)
+            .cloned()
+            .collect()
+    }
+
+    fn remember_names(&mut self, world: &World) {
+        for p in &world.people {
+            self.names.entry(p.id).or_insert_with(|| p.name.clone());
+        }
+    }
+
+    fn name(&self, id: EntityId) -> String {
+        self.names
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| format!("#{id}"))
+    }
+
+    fn describe(&self, event: &Event) -> (String, Vec<EntityId>) {
+        match *event {
+            Event::Met { a, b } => (
+                format!("{} and {} met", self.name(a), self.name(b)),
+                vec![a, b],
+            ),
+            Event::Born {
+                child,
+                parents: (p, q),
+            } => (
+                format!(
+                    "{} was born to {} and {}",
+                    self.name(child),
+                    self.name(p),
+                    self.name(q)
+                ),
+                vec![child, p, q],
+            ),
+            Event::EraReached { era } => (format!("The {} began", era.name()), vec![]),
+            Event::Died { person, cause } => (
+                format!(
+                    "{} died of {}",
+                    self.name(person),
+                    match cause {
+                        DeathCause::Starvation => "starvation",
+                        DeathCause::OldAge => "old age",
+                    }
+                ),
+                vec![person],
+            ),
+        }
+    }
 }
 
 /// Static facts about the world's rules, sent once so the client never has
@@ -125,6 +238,9 @@ pub struct WorldView {
     pub daylight: f32,
     pub era: Era,
     pub knowledge: f64,
+    /// [`EventLog::next_seq`] when the frame was made; a client that has seen
+    /// fewer entries than this is about to receive a [`ServerMsg::Log`].
+    pub log_seq: u64,
     pub people: Vec<PersonView>,
     pub animals: Vec<AnimalView>,
     pub deposits: Vec<DepositView>,
@@ -175,6 +291,15 @@ pub struct BondView {
     pub first_met: u64,
 }
 
+impl WorldView {
+    pub fn new(world: &World, log_seq: u64) -> Self {
+        Self {
+            log_seq,
+            ..Self::from(world)
+        }
+    }
+}
+
 impl From<&World> for WorldView {
     fn from(world: &World) -> Self {
         let t = world.time;
@@ -192,6 +317,7 @@ impl From<&World> for WorldView {
             daylight: t.daylight(),
             era: world.era,
             knowledge: world.knowledge,
+            log_seq: 0,
             people: world
                 .people
                 .iter()
@@ -269,6 +395,26 @@ mod tests {
             world.step();
         }
         let msg = ServerMsg::Frame(WorldView::from(&world));
+        assert_eq!(decode(&encode(&msg)).unwrap(), msg);
+    }
+
+    #[test]
+    fn log_names_everyone_and_round_trips() {
+        let mut world = World::new(9, WorldConfig::default());
+        let mut log = EventLog::new(&world);
+        for _ in 0..sim::TICKS_PER_DAY * 5 {
+            let events = world.step();
+            log.record(&world, &events);
+        }
+        let all = log.since(0);
+        assert!(!all.is_empty());
+        assert!(all.len() <= LOG_CAPACITY);
+        assert!(
+            all.iter().all(|e| !e.text.contains('#')),
+            "every name known"
+        );
+        assert_eq!(all.last().unwrap().seq + 1, log.next_seq());
+        let msg = ServerMsg::Log(all);
         assert_eq!(decode(&encode(&msg)).unwrap(), msg);
     }
 

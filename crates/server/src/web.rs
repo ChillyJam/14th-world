@@ -1,8 +1,11 @@
+use std::sync::{Arc, Mutex};
+
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::Router;
+use protocol::{EventLog, ServerMsg};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
@@ -11,6 +14,7 @@ use tower_http::trace::TraceLayer;
 pub struct AppState {
     pub welcome: String,
     pub frames: watch::Receiver<String>,
+    pub log: Arc<Mutex<EventLog>>,
     pub shutdown: CancellationToken,
 }
 
@@ -36,12 +40,16 @@ async fn stream_frames(mut socket: WebSocket, state: AppState) {
     let AppState {
         welcome,
         mut frames,
+        log,
         shutdown,
     } = state;
 
     if socket.send(Message::Text(welcome.into())).await.is_err() {
         return;
     }
+
+    // The first Log message carries the whole remembered history.
+    let mut sent_seq = 0;
 
     loop {
         tokio::select! {
@@ -51,8 +59,19 @@ async fn stream_frames(mut socket: WebSocket, state: AppState) {
                     break;
                 }
                 let frame = frames.borrow_and_update().clone();
+                let (entries, next_seq) = {
+                    let log = log.lock().expect("log lock poisoned");
+                    (log.since(sent_seq), log.next_seq())
+                };
                 if socket.send(Message::Text(frame.into())).await.is_err() {
                     break;
+                }
+                if !entries.is_empty() {
+                    sent_seq = next_seq;
+                    let msg = protocol::encode(&ServerMsg::Log(entries));
+                    if socket.send(Message::Text(msg.into())).await.is_err() {
+                        break;
+                    }
                 }
             }
             incoming = socket.recv() => match incoming {
