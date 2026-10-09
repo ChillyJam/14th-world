@@ -370,6 +370,7 @@ fn deposit_style(material: Material) -> (Color32, f32) {
         Material::Copper => (Color32::from_rgb(196, 112, 56), 6.0),
         Material::Tin => (Color32::from_rgb(196, 204, 212), 6.0),
         Material::Iron => (Color32::from_rgb(120, 60, 50), 6.0),
+        Material::Grain => (Color32::from_rgb(214, 182, 74), 8.0),
     }
 }
 
