@@ -32,6 +32,12 @@ const FORAGE_THRESHOLD: f32 = 0.5;
 const FORAGE_CHANCE: f32 = 0.01;
 /// How much hunger one meal takes away.
 const MEAL: f32 = 0.4;
+/// Chance per tick that someone who is starving dies of it: about a day.
+const STARVATION_CHANCE: f32 = 1.0 / TICKS_PER_DAY as f32;
+/// People start to die of old age after this many years.
+const OLD_AGE_YEARS: u64 = 60;
+/// Chance per tick of dying once old: about a month's life left on average.
+const OLD_AGE_CHANCE: f32 = 1.0 / (30 * TICKS_PER_DAY) as f32;
 /// The most weight, in kilograms, a person can carry.
 pub const CARRY_LIMIT: u32 = 40;
 /// How close a person has to be to a deposit to gather from it.
@@ -142,6 +148,13 @@ pub struct Relationship {
     pub last_met: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeathCause {
+    Starvation,
+    OldAge,
+}
+
 /// Something notable that happened during a step. The server appends these to
 /// the history log.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -149,6 +162,7 @@ pub struct Relationship {
 pub enum Event {
     Met { a: EntityId, b: EntityId },
     EraReached { era: Era },
+    Died { person: EntityId, cause: DeathCause },
 }
 
 impl Event {
@@ -156,6 +170,7 @@ impl Event {
         match self {
             Event::Met { .. } => "met",
             Event::EraReached { .. } => "era_reached",
+            Event::Died { .. } => "died",
         }
     }
 }
@@ -318,6 +333,7 @@ impl World {
                 person.hunger = (person.hunger - MEAL).max(0.0);
             }
         }
+        self.deaths(&mut events);
         if !asleep {
             for person in &mut self.people {
                 wander(
@@ -365,6 +381,28 @@ impl World {
         }
 
         events
+    }
+
+    /// The starving and the very old may die. Their relationships remain as
+    /// history, but they no longer move, gather or meet anyone.
+    fn deaths(&mut self, events: &mut Vec<Event>) {
+        let tick = self.time.tick;
+        let rng = &mut self.rng;
+        self.people.retain(|p| {
+            let age_years = (tick - p.born_tick) / (TICKS_PER_DAY * crate::DAYS_PER_YEAR);
+            let cause = if p.hunger >= 1.0 && rng.chance(STARVATION_CHANCE) {
+                DeathCause::Starvation
+            } else if age_years >= OLD_AGE_YEARS && rng.chance(OLD_AGE_CHANCE) {
+                DeathCause::OldAge
+            } else {
+                return true;
+            };
+            events.push(Event::Died {
+                person: p.id,
+                cause,
+            });
+            false
+        });
     }
 
     /// People who come close form or strengthen relationships and learn from
@@ -740,6 +778,55 @@ mod tests {
             assert!(w.people.iter().all(|p| (0.0..=1.0).contains(&p.hunger)));
         }
         assert!(peak < 1.0, "foraging should keep people from starving");
+    }
+
+    #[test]
+    fn the_starving_die() {
+        let mut w = world();
+        // Nothing to eat: tick 1 is at night, so nobody forages.
+        for p in &mut w.people {
+            p.hunger = 1.0;
+        }
+        let mut died = Vec::new();
+        for _ in 0..TICKS_PER_DAY * 3 {
+            for p in &mut w.people {
+                p.hunger = 1.0;
+            }
+            for e in w.step() {
+                if let Event::Died { person, cause } = e {
+                    assert_eq!(cause, DeathCause::Starvation);
+                    died.push(person);
+                }
+            }
+        }
+        assert!(!died.is_empty(), "starving people should die");
+        assert_eq!(w.people.len() + died.len(), INITIAL_PEOPLE);
+        assert!(w.people.iter().all(|p| !died.contains(&p.id)));
+    }
+
+    #[test]
+    fn the_old_die() {
+        let mut w = world();
+        w.time.tick = OLD_AGE_YEARS * crate::DAYS_PER_YEAR * TICKS_PER_DAY;
+        for _ in 0..TICKS_PER_DAY * 365 {
+            for p in &mut w.people {
+                p.hunger = 0.0;
+            }
+            w.step();
+        }
+        assert!(w.people.is_empty(), "everyone should have died of old age");
+    }
+
+    #[test]
+    fn the_young_do_not_die_of_old_age() {
+        let mut w = world();
+        for _ in 0..TICKS_PER_DAY * 20 {
+            for p in &mut w.people {
+                p.hunger = 0.0;
+            }
+            w.step();
+        }
+        assert_eq!(w.people.len(), INITIAL_PEOPLE);
     }
 
     #[test]
