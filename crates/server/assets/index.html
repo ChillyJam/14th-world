@@ -504,6 +504,7 @@ function updatePanel(entity) {
       row(table, "Parents", names.join(" and "));
     }
     row(table, "Status", asleep ? "Asleep" : "Awake");
+    row(table, "Focus", item.focus.charAt(0).toUpperCase() + item.focus.slice(1));
     row(table, "Knowledge", `${item.knowledge.toFixed(1)} (${share.toFixed(0)}% of all)`);
     const hunger = el("span");
     hunger.append(bar(item.hunger), " ", hungerLabel(item.hunger));
