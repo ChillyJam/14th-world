@@ -373,6 +373,7 @@ fn deposit_style(material: Material) -> (Color32, f32) {
         Material::Berries => (Color32::from_rgb(168, 40, 88), 6.0),
         Material::Mushrooms => (Color32::from_rgb(196, 170, 130), 5.0),
         Material::Roots => (Color32::from_rgb(140, 104, 58), 5.0),
+        Material::Grain => (Color32::from_rgb(214, 182, 74), 8.0),
     }
 }
 

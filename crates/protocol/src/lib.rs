@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use sim::{EntityId, Era, Material, Species, World};
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Relationships weaker than this are not sent to the client.
 const MIN_VISIBLE_AFFINITY: f32 = 0.15;

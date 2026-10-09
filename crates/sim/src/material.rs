@@ -13,14 +13,16 @@ pub enum Material {
     Copper,
     Tin,
     Iron,
-    // Foraged food. Appended last so saved worlds keep their material ids.
+    // Foraged food. Appended after the original materials so saved worlds keep their ids.
     Berries,
     Mushrooms,
     Roots,
+    /// Not found in the wild: people plant and harvest it from fields.
+    Grain,
 }
 
 impl Material {
-    pub const ALL: [Material; 10] = [
+    pub const ALL: [Material; 11] = [
         Material::Wood,
         Material::Stone,
         Material::Flint,
@@ -31,6 +33,7 @@ impl Material {
         Material::Berries,
         Material::Mushrooms,
         Material::Roots,
+        Material::Grain,
     ];
 
     pub fn name(self) -> &'static str {
@@ -45,6 +48,7 @@ impl Material {
             Material::Berries => "Berries",
             Material::Mushrooms => "Mushrooms",
             Material::Roots => "Roots",
+            Material::Grain => "Grain",
         }
     }
 
@@ -61,6 +65,7 @@ impl Material {
             Material::Berries => "Berry bush",
             Material::Mushrooms => "Mushroom patch",
             Material::Roots => "Root patch",
+            Material::Grain => "Field",
         }
     }
 
@@ -73,7 +78,7 @@ impl Material {
             | Material::Berries
             | Material::Mushrooms
             | Material::Roots => Era::Primitive,
-            Material::Clay => Era::Neolithic,
+            Material::Clay | Material::Grain => Era::Neolithic,
             Material::Copper | Material::Tin => Era::BronzeAge,
             Material::Iron => Era::IronAge,
         }
@@ -99,16 +104,22 @@ impl Material {
             Material::Berries => 12,
             Material::Mushrooms => 8,
             Material::Roots => 10,
+            Material::Grain => 10,
         }
     }
 
-    /// Units a deposit regains each day. Trees and foraged plants grow back.
+    /// Units a deposit regains each day. Trees, foraged plants and fields grow back.
     pub fn regrowth_per_day(self) -> u32 {
         match self {
             Material::Wood | Material::Roots => 1,
-            Material::Berries | Material::Mushrooms => 2,
+            Material::Berries | Material::Mushrooms | Material::Grain => 2,
             _ => 0,
         }
+    }
+
+    /// Whether people sow this material themselves instead of finding it.
+    pub fn is_planted(self) -> bool {
+        self == Material::Grain
     }
 
     /// How many deposits a new world scatters across the map. Common
@@ -125,6 +136,7 @@ impl Material {
             Material::Berries => 20,
             Material::Mushrooms => 12,
             Material::Roots => 12,
+            Material::Grain => 0,
         }
     }
 
@@ -163,6 +175,8 @@ mod tests {
 
     #[test]
     fn every_material_appears_in_a_new_world() {
-        assert!(Material::ALL.iter().all(|m| m.scattered() > 0));
+        assert!(Material::ALL
+            .iter()
+            .all(|m| m.is_planted() || m.scattered() > 0));
     }
 }
