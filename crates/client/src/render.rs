@@ -7,7 +7,7 @@ use eframe::egui::{
     self, Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, Vec2,
 };
 use protocol::{AnimalView, DepositView, PersonView, WorldView};
-use sim::{EntityId, Era, Material, Species, WorldTime, DAYS_PER_YEAR, TICKS_PER_DAY};
+use sim::{EntityId, Era, Material, Species, WorldTime, CARRY_LIMIT, DAYS_PER_YEAR, TICKS_PER_DAY};
 
 use crate::State;
 
@@ -221,6 +221,11 @@ fn person_stats(ui: &mut egui::Ui, view: &WorldView, person: &PersonView) {
         ui.end_row();
         stat(ui, "Has met", format!("{} people", person.acquaintances));
         stat(ui, "Carrying", format_inventory(&person.inventory));
+        stat(
+            ui,
+            "Load",
+            format!("{} / {CARRY_LIMIT} kg", carried_weight(&person.inventory)),
+        );
         stat(ui, "Position", format!("{:.0}, {:.0}", person.x, person.y));
     });
 
@@ -316,6 +321,11 @@ fn gatherable(material: Material, era: Era) -> String {
     } else {
         format!("From the {}", material.era().name())
     }
+}
+
+/// Total weight of an inventory, in kilograms.
+fn carried_weight(inventory: &[(Material, u32)]) -> u32 {
+    inventory.iter().map(|(m, n)| m.weight() * n).sum()
 }
 
 /// E.g. "3 Wood, 1 Flint", or "Nothing".
@@ -469,6 +479,15 @@ mod tests {
         assert_eq!(
             format_inventory(&[(Material::Wood, 3), (Material::Flint, 1)]),
             "3 Wood, 1 Flint"
+        );
+    }
+
+    #[test]
+    fn load_adds_up_the_weight_of_everything_carried() {
+        assert_eq!(carried_weight(&[]), 0);
+        assert_eq!(
+            carried_weight(&[(Material::Wood, 3), (Material::Flint, 1)]),
+            3 * Material::Wood.weight() + Material::Flint.weight()
         );
     }
 
