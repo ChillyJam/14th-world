@@ -25,6 +25,16 @@
   #panel td { padding: 2px 0; vertical-align: middle; }
   #panel td:first-child { color: #9a9ca8; padding-right: 12px; white-space: nowrap; }
   #panel h4 { margin: 10px 0 4px; padding-top: 8px; border-top: 1px solid #444; font-size: 13px; }
+  #log { position: fixed; left: 12px; bottom: 34px; width: 320px; max-height: 40%;
+    display: flex; flex-direction: column; background: rgba(24,26,36,.92);
+    border: 1px solid #444; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
+  #log[hidden] { display: none; }
+  #log header { padding: 8px 12px 4px; font-weight: 600; font-size: 14px; }
+  .entries { margin: 0; padding: 0 12px 8px; list-style: none; overflow-y: auto; }
+  .entries li { padding: 2px 0; }
+  .entries time { display: block; font-size: 11px; color: #9a9ca8; }
+  .entries:empty::after { content: "Nothing yet"; color: #9a9ca8; }
+  #panel .entries { max-height: 160px; padding: 0; }
   .bar { display: inline-block; width: 80px; height: 10px; background: #3a3d4c;
     border-radius: 3px; overflow: hidden; vertical-align: middle; }
   .bar i { display: block; height: 100%; background: #e5a64a; }
@@ -35,7 +45,11 @@
 <canvas id="world"></canvas>
 <div id="hud"></div>
 <div id="status">Connecting…</div>
-<div id="help">Drag or WASD to move · scroll or +/− to zoom · 0 to see everything · F to follow selection</div>
+<div id="help">Drag or WASD to move · scroll or +/− to zoom · 0 to see everything · F to follow selection · L for the event log</div>
+<aside id="log" hidden>
+  <header>World events</header>
+  <ul class="entries" id="world-log"></ul>
+</aside>
 <aside id="panel" hidden>
   <header><span id="title"></span><button id="close" aria-label="Close">×</button></header>
   <div id="stats"></div>
@@ -43,7 +57,8 @@
 <script>
 "use strict";
 
-const PROTOCOL_VERSION = 6;
+const PROTOCOL_VERSION = 7;
+const LOG_LIMIT = 2000;
 const NIGHT_SKY = [10, 14, 35];
 const DAY_GRASS = [104, 158, 86];
 const PERSON = "#ffd166";
@@ -74,8 +89,13 @@ const ctx = canvas.getContext("2d");
 const hud = document.getElementById("hud");
 const statusEl = document.getElementById("status");
 const panel = document.getElementById("panel");
+const logPane = document.getElementById("log");
+const worldLog = document.getElementById("world-log");
 
 let catalog = null;
+/** Every log entry received, oldest first. */
+const eventLog = [];
+let logDirty = true;
 let worldSize = [1, 1];
 let view = null;
 let selected = null;
@@ -107,6 +127,11 @@ function connect() {
       catalog = w.catalog;
       worldSize = [w.world_width, w.world_height];
       setStatus(null);
+    } else if (msg.Log) {
+      eventLog.push(...msg.Log);
+      if (eventLog.length > LOG_LIMIT) eventLog.splice(0, eventLog.length - LOG_LIMIT);
+      logDirty = true;
+      if (view) requestAnimationFrame(draw);
     } else if (msg.Frame && catalog) {
       view = msg.Frame;
       requestAnimationFrame(draw);
@@ -279,6 +304,7 @@ function draw() {
     ctx.stroke();
   }
   updatePanel(entity);
+  updateLogs(entity);
 }
 
 function onScreen(wx, wy) {
@@ -382,6 +408,7 @@ addEventListener("keydown", (e) => {
   else if (key === "+" || key === "=") { zoomAt(1.25, innerWidth / 2, innerHeight / 2); if (view) draw(); }
   else if (key === "-" || key === "_") { zoomAt(0.8, innerWidth / 2, innerHeight / 2); if (view) draw(); }
   else if (key === "0") { camera.scale = 0; camera.x = worldSize[0] / 2; camera.y = worldSize[1] / 2; following = false; if (view) draw(); }
+  else if (key === "l") { logPane.hidden = !logPane.hidden; logDirty = true; if (view) draw(); }
   else if (key === "f") { following = selected !== null; }
 });
 addEventListener("keyup", (e) => { heldKeys.delete(e.key.toLowerCase()); });
@@ -437,6 +464,29 @@ function row(table, label, value) {
 }
 
 let hoveredBond = null;
+
+/** Newest first. `involving` limits it to entries about one entity. */
+function logItems(involving) {
+  const items = [];
+  for (let i = eventLog.length - 1; i >= 0 && items.length < 100; i--) {
+    const e = eventLog[i];
+    if (involving !== undefined && !e.involved.includes(involving)) continue;
+    const li = el("li", e.text);
+    li.append(el("time", formatDate(e.tick)));
+    items.push(li);
+  }
+  return items;
+}
+
+function updateLogs(entity) {
+  const personId = entity?.kind === "person" ? entity.item.id : null;
+  const key = `${eventLog.length}:${personId}:${logPane.hidden}`;
+  if (key === updateLogs.key) return;
+  updateLogs.key = key;
+  if (!logPane.hidden) worldLog.replaceChildren(...logItems());
+  const mine = document.getElementById("person-log");
+  if (mine) mine.replaceChildren(...logItems(personId));
+}
 
 function updatePanel(entity) {
   if (!entity) { panel.hidden = true; hoveredBond = null; return; }
@@ -507,6 +557,13 @@ function updatePanel(entity) {
     }
   }
 
+  if (kind === "person") {
+    const list = el("ul");
+    list.className = "entries";
+    list.id = "person-log";
+    children.push(el("h4", "Events"), list);
+  }
+
   document.getElementById("title").textContent = title;
   document.getElementById("stats").replaceChildren(...children);
   // Rows are rebuilt on every update, so re-derive the hover from the pointer.
@@ -515,6 +572,7 @@ function updatePanel(entity) {
     if (tr.matches(":hover")) hoveredBond = { a: Number(tr.dataset.a), b: Number(tr.dataset.b) };
   }
   panel.hidden = false;
+  updateLogs.key = null; // the panel was rebuilt, so its log is empty again
 }
 
 resize();

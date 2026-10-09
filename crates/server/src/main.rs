@@ -3,8 +3,10 @@ mod db;
 mod engine;
 mod web;
 
+use std::sync::{Arc, Mutex};
+
 use anyhow::Context;
-use protocol::{Catalog, ServerMsg, PROTOCOL_VERSION};
+use protocol::{Catalog, EventLog, ServerMsg, PROTOCOL_VERSION};
 use sim::{World, WorldConfig};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -50,7 +52,8 @@ async fn main() -> anyhow::Result<()> {
         world_height: world.config.height,
         catalog: Catalog::new(),
     });
-    let (frames_tx, frames_rx) = watch::channel(engine::frame(&world));
+    let log = Arc::new(Mutex::new(EventLog::new(&world)));
+    let (frames_tx, frames_rx) = watch::channel(engine::frame(&world, 0));
     let shutdown = CancellationToken::new();
 
     let engine = tokio::spawn(engine::run(
@@ -58,12 +61,14 @@ async fn main() -> anyhow::Result<()> {
         db,
         config.clone(),
         frames_tx,
+        log.clone(),
         shutdown.clone(),
     ));
 
     let app = web::router(web::AppState {
         welcome,
         frames: frames_rx,
+        log,
         shutdown: shutdown.clone(),
     });
     let listener = TcpListener::bind(config.bind)
