@@ -73,7 +73,16 @@ pub enum Species {
 }
 
 impl Species {
-    fn speed(self) -> f32 {
+    pub fn name(self) -> &'static str {
+        match self {
+            Species::Deer => "Deer",
+            Species::Rabbit => "Rabbit",
+            Species::Wolf => "Wolf",
+        }
+    }
+
+    /// Distance covered per tick.
+    pub fn speed(self) -> f32 {
         match self {
             Species::Deer => 0.8,
             Species::Rabbit => 1.0,

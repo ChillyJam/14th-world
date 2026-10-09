@@ -78,6 +78,10 @@ cargo run --bin world-server          # terminal 1, listens on port 8080
 cargo run --bin world-client          # terminal 2, opens a window
 ```
 
+Click a person or animal to see its stats. For people that's age, knowledge,
+whether they're asleep and who they're close to. Press Esc or click empty
+ground to close the panel.
+
 The world is stored in `data/world.db`. Stop the server with Ctrl+C and it
 saves before exiting. Closing the client leaves the world running, and the
 client reconnects by itself if the server restarts.
@@ -141,4 +145,4 @@ knowledge and eras. Next steps:
 - Discoveries as a tech tree instead of a single knowledge number
 - A spatial index for encounters once populations grow (currently O(n²))
 - Delta-encoded frames and viewport culling for large worlds
-- Click to inspect a person: relationships, history, knowledge
+- A person's history (who they met and when) in the stats panel

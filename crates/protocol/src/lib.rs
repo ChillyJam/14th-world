@@ -4,10 +4,12 @@
 //! this crate, so a mismatch is a compile error rather than a runtime surprise;
 //! [`PROTOCOL_VERSION`] guards against a client built from an older version.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use sim::{EntityId, Era, Species, World};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Relationships weaker than this are not sent to the client.
 const MIN_VISIBLE_AFFINITY: f32 = 0.15;
@@ -44,6 +46,10 @@ pub struct PersonView {
     pub name: String,
     pub x: f32,
     pub y: f32,
+    pub born_tick: u64,
+    pub knowledge: f64,
+    /// Everyone this person has ever met, including bonds too weak to send.
+    pub acquaintances: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -59,11 +65,18 @@ pub struct BondView {
     pub a: EntityId,
     pub b: EntityId,
     pub affinity: f32,
+    pub encounters: u32,
+    pub first_met: u64,
 }
 
 impl From<&World> for WorldView {
     fn from(world: &World) -> Self {
         let t = world.time;
+        let mut acquaintances: HashMap<EntityId, u32> = HashMap::new();
+        for &(a, b) in world.relationships().keys() {
+            *acquaintances.entry(a).or_default() += 1;
+            *acquaintances.entry(b).or_default() += 1;
+        }
         Self {
             tick: t.tick,
             year: t.year(),
@@ -80,6 +93,9 @@ impl From<&World> for WorldView {
                     name: p.name.clone(),
                     x: p.position.x,
                     y: p.position.y,
+                    born_tick: p.born_tick,
+                    knowledge: p.knowledge,
+                    acquaintances: acquaintances.get(&p.id).copied().unwrap_or(0),
                 })
                 .collect(),
             animals: world
@@ -100,6 +116,8 @@ impl From<&World> for WorldView {
                     a,
                     b,
                     affinity: rel.affinity,
+                    encounters: rel.encounters,
+                    first_met: rel.first_met,
                 })
                 .collect(),
         }
@@ -127,5 +145,20 @@ mod tests {
         }
         let msg = ServerMsg::Frame(WorldView::from(&world));
         assert_eq!(decode(&encode(&msg)).unwrap(), msg);
+    }
+
+    #[test]
+    fn acquaintances_match_relationships() {
+        let mut world = World::new(9, WorldConfig::default());
+        for _ in 0..sim::TICKS_PER_DAY * 5 {
+            world.step();
+        }
+        let view = WorldView::from(&world);
+        let total: u32 = view.people.iter().map(|p| p.acquaintances).sum();
+        assert!(
+            total > 0,
+            "the founding group should meet within a few days"
+        );
+        assert_eq!(total as usize, 2 * world.relationships().len());
     }
 }
