@@ -10,7 +10,7 @@ pub type EntityId = u64;
 /// Bump whenever [`World`]'s serialized layout changes. Snapshots written with
 /// an unknown version are refused rather than silently misread; older known
 /// versions are migrated in [`World::from_snapshot`].
-pub const SNAPSHOT_VERSION: u32 = 3;
+pub const SNAPSHOT_VERSION: u32 = 4;
 
 const INITIAL_PEOPLE: usize = 4;
 const INITIAL_ANIMALS: usize = 24;
@@ -40,6 +40,18 @@ const GATHER_CHANCE: f32 = 0.05;
 const PLANT_CHANCE: f32 = 0.002;
 /// Fields each person tends, at most, so farmland stays bounded.
 const MAX_FIELDS_PER_PERSON: usize = 2;
+/// Ticks before a person can have children: 30 days.
+const ADULT_AGE: u64 = 30 * TICKS_PER_DAY;
+/// Ticks before the same pair can have another child: 30 days.
+const BIRTH_COOLDOWN: u64 = 30 * TICKS_PER_DAY;
+/// Relationships weaker than this do not lead to children.
+const MIN_PARTNER_AFFINITY: f32 = 0.3;
+/// Parents must be at most this hungry.
+const MAX_PARENT_HUNGER: f32 = 0.5;
+/// Chance per waking tick that a willing pair standing together has a child.
+const BIRTH_CHANCE: f32 = 0.0005;
+/// The population stops growing here, which also bounds the O(n²) encounters.
+pub const MAX_PEOPLE: usize = 200;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Vec2 {
@@ -77,6 +89,8 @@ pub struct Person {
     pub id: EntityId,
     pub name: String,
     pub born_tick: u64,
+    /// `None` for the founders.
+    pub parents: Option<(EntityId, EntityId)>,
     /// Where this person sleeps and roams around.
     pub home: Vec2,
     pub position: Vec2,
@@ -138,14 +152,24 @@ pub struct Relationship {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Event {
-    Met { a: EntityId, b: EntityId },
-    EraReached { era: Era },
+    Met {
+        a: EntityId,
+        b: EntityId,
+    },
+    Born {
+        child: EntityId,
+        parents: (EntityId, EntityId),
+    },
+    EraReached {
+        era: Era,
+    },
 }
 
 impl Event {
     pub fn kind(&self) -> &'static str {
         match self {
             Event::Met { .. } => "met",
+            Event::Born { .. } => "born",
             Event::EraReached { .. } => "era_reached",
         }
     }
@@ -202,6 +226,7 @@ impl World {
                 id,
                 name,
                 born_tick: 0,
+                parents: None,
                 home: centre,
                 position,
                 target: position,
@@ -325,6 +350,7 @@ impl World {
                 }
             }
             self.encounters(&mut events);
+            self.reproduce(&mut events);
             self.plant();
             self.gather();
         }
@@ -400,6 +426,60 @@ impl World {
         }
     }
 
+    /// Two adults who are close, fond of each other and well fed sometimes
+    /// have a child, born between them into the first parent's home. A pair
+    /// waits out [`BIRTH_COOLDOWN`] between children.
+    fn reproduce(&mut self, events: &mut Vec<Event>) {
+        let tick = self.time.tick;
+        let adult = |p: &Person| tick - p.born_tick >= ADULT_AGE && p.hunger <= MAX_PARENT_HUNGER;
+        for i in 0..self.people.len() {
+            for j in (i + 1)..self.people.len() {
+                if self.people.len() >= MAX_PEOPLE {
+                    return;
+                }
+                let (a, b) = (&self.people[i], &self.people[j]);
+                if !adult(a) || !adult(b) || a.position.distance(b.position) > MEET_RADIUS {
+                    continue;
+                }
+                let pair = ordered(a.id, b.id);
+                let fond = self
+                    .relationships
+                    .get(&pair)
+                    .is_some_and(|rel| rel.affinity >= MIN_PARTNER_AFFINITY);
+                let recent_child = self
+                    .people
+                    .iter()
+                    .any(|c| c.parents == Some(pair) && tick - c.born_tick < BIRTH_COOLDOWN);
+                if !fond || recent_child || !self.rng.chance(BIRTH_CHANCE) {
+                    continue;
+                }
+                let position = Vec2::new(
+                    (a.position.x + b.position.x) / 2.0,
+                    (a.position.y + b.position.y) / 2.0,
+                );
+                let home = a.home;
+                let id = self.alloc_id();
+                let name = self.random_name();
+                self.people.push(Person {
+                    id,
+                    name,
+                    born_tick: tick,
+                    parents: Some(pair),
+                    home,
+                    position,
+                    target: position,
+                    knowledge: 0.0,
+                    hunger: 0.0,
+                    inventory: BTreeMap::new(),
+                });
+                events.push(Event::Born {
+                    child: id,
+                    parents: pair,
+                });
+            }
+        }
+    }
+
     /// Once the world knows farming, people sow fields near where they are.
     /// A new field starts bare and ripens a little each day.
     fn plant(&mut self) {
@@ -462,6 +542,11 @@ impl World {
     pub fn from_snapshot(bytes: &[u8]) -> Result<Self, SnapshotError> {
         let (version, rest): (u32, &[u8]) = postcard::take_from_bytes(bytes)?;
         match version {
+            3 => {
+                let mut world: Self = postcard::from_bytes::<v3::World>(rest)?.into();
+                world.add_missing_deposits();
+                Ok(world)
+            }
             1 => Ok(postcard::from_bytes::<v1::World>(rest)?.into()),
             2 => {
                 let mut world: Self = postcard::from_bytes::<v2::World>(rest)?.into();
@@ -543,6 +628,7 @@ mod v1 {
                         id: p.id,
                         name: p.name,
                         born_tick: p.born_tick,
+                        parents: None,
                         home: p.home,
                         position: p.position,
                         target: p.target,
@@ -608,11 +694,77 @@ mod v2 {
                         id: p.id,
                         name: p.name,
                         born_tick: p.born_tick,
+                        parents: None,
                         home: p.home,
                         position: p.position,
                         target: p.target,
                         knowledge: p.knowledge,
                         hunger: 0.0,
+                        inventory: p.inventory,
+                    })
+                    .collect(),
+                animals: old.animals,
+                deposits: old.deposits,
+                relationships: old.relationships,
+                rng: old.rng,
+                next_id: old.next_id,
+            }
+        }
+    }
+}
+
+/// The snapshot layout before people had parents.
+mod v3 {
+    use super::*;
+
+    #[derive(Serialize, Deserialize)]
+    pub struct Person {
+        pub id: EntityId,
+        pub name: String,
+        pub born_tick: u64,
+        pub home: Vec2,
+        pub position: Vec2,
+        pub target: Vec2,
+        pub knowledge: f64,
+        pub hunger: f32,
+        pub inventory: BTreeMap<Material, u32>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    pub struct World {
+        pub config: WorldConfig,
+        pub time: WorldTime,
+        pub era: Era,
+        pub knowledge: f64,
+        pub people: Vec<Person>,
+        pub animals: Vec<Animal>,
+        pub deposits: Vec<Deposit>,
+        pub relationships: BTreeMap<(EntityId, EntityId), Relationship>,
+        pub rng: Rng,
+        pub next_id: EntityId,
+    }
+
+    /// Everyone already alive counts as a founder.
+    impl From<World> for super::World {
+        fn from(old: World) -> Self {
+            Self {
+                config: old.config,
+                time: old.time,
+                era: old.era,
+                knowledge: old.knowledge,
+                people: old
+                    .people
+                    .into_iter()
+                    .map(|p| super::Person {
+                        id: p.id,
+                        name: p.name,
+                        born_tick: p.born_tick,
+                        parents: None,
+                        home: p.home,
+                        position: p.position,
+                        target: p.target,
+                        knowledge: p.knowledge,
+                        hunger: p.hunger,
                         inventory: p.inventory,
                     })
                     .collect(),
@@ -912,5 +1064,76 @@ mod tests {
         for material in Material::ALL.into_iter().filter(|m| !m.is_planted()) {
             assert!(loaded.deposits.iter().any(|d| d.material == material));
         }
+    }
+
+    #[test]
+    fn people_have_children() {
+        let mut w = world();
+        let mut born = 0;
+        for _ in 0..TICKS_PER_DAY * 120 {
+            for e in w.step() {
+                if let Event::Born { child, parents } = e {
+                    born += 1;
+                    let kid = w.people.iter().find(|p| p.id == child).unwrap();
+                    assert_eq!(kid.parents, Some(parents));
+                    assert!(kid.born_tick >= ADULT_AGE, "children cannot have children");
+                }
+            }
+        }
+        assert!(born > 0, "the founders should have children within months");
+        assert_eq!(w.people.len(), INITIAL_PEOPLE + born);
+    }
+
+    #[test]
+    fn population_is_capped() {
+        let mut w = world();
+        let template = w.people[0].clone();
+        while w.people.len() < MAX_PEOPLE {
+            let mut p = template.clone();
+            p.id = w.alloc_id();
+            w.people.push(p);
+        }
+        w.time.tick = ADULT_AGE;
+        for _ in 0..TICKS_PER_DAY {
+            w.step();
+        }
+        assert_eq!(w.people.len(), MAX_PEOPLE);
+    }
+
+    #[test]
+    fn migrates_v3_snapshots() {
+        let mut w = world();
+        for _ in 0..TICKS_PER_DAY {
+            w.step();
+        }
+        let old = v3::World {
+            config: w.config,
+            time: w.time,
+            era: w.era,
+            knowledge: w.knowledge,
+            people: w
+                .people
+                .iter()
+                .map(|p| v3::Person {
+                    id: p.id,
+                    name: p.name.clone(),
+                    born_tick: p.born_tick,
+                    home: p.home,
+                    position: p.position,
+                    target: p.target,
+                    knowledge: p.knowledge,
+                    hunger: p.hunger,
+                    inventory: p.inventory.clone(),
+                })
+                .collect(),
+            animals: w.animals.clone(),
+            deposits: w.deposits.clone(),
+            relationships: w.relationships.clone(),
+            rng: w.rng.clone(),
+            next_id: w.next_id,
+        };
+        let bytes = postcard::to_stdvec(&(3u32, old)).unwrap();
+        let migrated = World::from_snapshot(&bytes).unwrap();
+        assert_eq!(migrated, w);
     }
 }

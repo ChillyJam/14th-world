@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use sim::{EntityId, Era, Material, Species, World};
 
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Relationships weaker than this are not sent to the client.
 const MIN_VISIBLE_AFFINITY: f32 = 0.15;
@@ -132,6 +132,8 @@ pub struct PersonView {
     pub x: f32,
     pub y: f32,
     pub born_tick: u64,
+    /// `None` for the founders.
+    pub parents: Option<(EntityId, EntityId)>,
     pub knowledge: f64,
     /// 0.0 = full, 1.0 = starving.
     pub hunger: f32,
@@ -192,6 +194,7 @@ impl From<&World> for WorldView {
                     x: p.position.x,
                     y: p.position.y,
                     born_tick: p.born_tick,
+                    parents: p.parents,
                     knowledge: p.knowledge,
                     hunger: p.hunger,
                     acquaintances: acquaintances.get(&p.id).copied().unwrap_or(0),

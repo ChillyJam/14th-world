@@ -83,6 +83,11 @@ from both Command Prompt and PowerShell:
 
 Without `make`: `cargo run --bin world-server`.
 
+People reproduce: two adults (30 days old or more) who are fond of each other,
+well fed and standing together occasionally have a child, at most one per pair
+every 30 days. The population stops growing at 200. A person's panel lists
+their parents.
+
 Click a person, animal or material deposit to see its stats. For people that's
 age, knowledge, whether they're asleep, what they're carrying and who they're
 close to. For deposits it's how much is left and whether it can be gathered
@@ -131,7 +136,7 @@ CI runs all of the above on every pull request.
 The scaffold gives you movement, day/night, meetings, relationships,
 knowledge, eras and materials. Next steps:
 
-- Births, ageing and death, so the population can grow
+- Ageing and death, so the population is not only growing
 - Needs (food, shelter) and animals as a food source
 - Terrain and settlements
 - Using gathered materials: tools, shelter and crafting
