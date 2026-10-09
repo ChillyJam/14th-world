@@ -10,7 +10,7 @@ pub type EntityId = u64;
 /// Bump whenever [`World`]'s serialized layout changes. Snapshots written with
 /// an unknown version are refused rather than silently misread; older known
 /// versions are migrated in [`World::from_snapshot`].
-pub const SNAPSHOT_VERSION: u32 = 2;
+pub const SNAPSHOT_VERSION: u32 = 3;
 
 const INITIAL_PEOPLE: usize = 4;
 const INITIAL_ANIMALS: usize = 24;
@@ -22,6 +22,16 @@ const ENCOUNTER_COOLDOWN: u64 = 60;
 const KNOWLEDGE_PER_ENCOUNTER: f64 = 0.5;
 /// Chance per waking tick that a person figures something out on their own.
 const DISCOVERY_CHANCE: f32 = 0.002;
+/// Hunger gained per waking tick: a full stomach empties in about a day.
+const HUNGER_PER_TICK: f32 = 1.0 / TICKS_PER_DAY as f32;
+/// Sleeping burns less.
+const SLEEP_HUNGER_FACTOR: f32 = 0.5;
+/// People start looking for food once they're this hungry.
+const FORAGE_THRESHOLD: f32 = 0.5;
+/// Chance per waking tick that a foraging person finds something to eat.
+const FORAGE_CHANCE: f32 = 0.01;
+/// How much hunger one meal takes away.
+const MEAL: f32 = 0.4;
 /// How close a person has to be to a deposit to gather from it.
 const GATHER_RADIUS: f32 = 8.0;
 /// Chance per waking tick that a person next to a deposit gathers one unit.
@@ -68,6 +78,8 @@ pub struct Person {
     pub position: Vec2,
     pub target: Vec2,
     pub knowledge: f64,
+    /// 0.0 = full, 1.0 = starving.
+    pub hunger: f32,
     /// Materials this person has gathered and is carrying.
     pub inventory: BTreeMap<Material, u32>,
 }
@@ -188,6 +200,7 @@ impl World {
                 position,
                 target: position,
                 knowledge: 0.0,
+                hunger: 0.0,
                 inventory: BTreeMap::new(),
             });
         }
@@ -260,7 +273,19 @@ impl World {
         let bounds = self.config;
 
         // People sleep at night; animals keep roaming.
-        if !self.time.is_night() {
+        let asleep = self.time.is_night();
+        for person in &mut self.people {
+            let rate = if asleep {
+                HUNGER_PER_TICK * SLEEP_HUNGER_FACTOR
+            } else {
+                HUNGER_PER_TICK
+            };
+            person.hunger = (person.hunger + rate).min(1.0);
+            if !asleep && person.hunger >= FORAGE_THRESHOLD && self.rng.chance(FORAGE_CHANCE) {
+                person.hunger = (person.hunger - MEAL).max(0.0);
+            }
+        }
+        if !asleep {
             for person in &mut self.people {
                 wander(
                     &mut person.position,
@@ -381,6 +406,7 @@ impl World {
         let (version, rest): (u32, &[u8]) = postcard::take_from_bytes(bytes)?;
         match version {
             1 => Ok(postcard::from_bytes::<v1::World>(rest)?.into()),
+            2 => Ok(postcard::from_bytes::<v2::World>(rest)?.into()),
             SNAPSHOT_VERSION => Ok(postcard::from_bytes(rest)?),
             found => Err(SnapshotError::UnsupportedVersion { found }),
         }
@@ -456,6 +482,7 @@ mod v1 {
                         position: p.position,
                         target: p.target,
                         knowledge: p.knowledge,
+                        hunger: 0.0,
                         inventory: BTreeMap::new(),
                     })
                     .collect(),
@@ -467,6 +494,69 @@ mod v1 {
             };
             world.spawn_deposits(home);
             world
+        }
+    }
+}
+
+/// The snapshot layout before hunger existed.
+mod v2 {
+    use super::*;
+
+    #[derive(Serialize, Deserialize)]
+    pub struct Person {
+        pub id: EntityId,
+        pub name: String,
+        pub born_tick: u64,
+        pub home: Vec2,
+        pub position: Vec2,
+        pub target: Vec2,
+        pub knowledge: f64,
+        pub inventory: BTreeMap<Material, u32>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    pub struct World {
+        pub config: WorldConfig,
+        pub time: WorldTime,
+        pub era: Era,
+        pub knowledge: f64,
+        pub people: Vec<Person>,
+        pub animals: Vec<Animal>,
+        pub deposits: Vec<Deposit>,
+        pub relationships: BTreeMap<(EntityId, EntityId), Relationship>,
+        pub rng: Rng,
+        pub next_id: EntityId,
+    }
+
+    /// Everyone starts well fed.
+    impl From<World> for super::World {
+        fn from(old: World) -> Self {
+            Self {
+                config: old.config,
+                time: old.time,
+                era: old.era,
+                knowledge: old.knowledge,
+                people: old
+                    .people
+                    .into_iter()
+                    .map(|p| super::Person {
+                        id: p.id,
+                        name: p.name,
+                        born_tick: p.born_tick,
+                        home: p.home,
+                        position: p.position,
+                        target: p.target,
+                        knowledge: p.knowledge,
+                        hunger: 0.0,
+                        inventory: p.inventory,
+                    })
+                    .collect(),
+                animals: old.animals,
+                deposits: old.deposits,
+                relationships: old.relationships,
+                rng: old.rng,
+                next_id: old.next_id,
+            }
         }
     }
 }
@@ -514,6 +604,7 @@ mod tests {
         let w = world();
         assert_eq!(w.people.len(), INITIAL_PEOPLE);
         assert!(w.people.iter().all(|p| p.knowledge == 0.0));
+        assert!(w.people.iter().all(|p| p.hunger == 0.0));
         assert_eq!(w.era, Era::Primitive);
     }
 
@@ -550,6 +641,25 @@ mod tests {
         }
         assert!(met > 0, "the founding group should meet within a few days");
         assert_eq!(met, w.relationships().len());
+    }
+
+    #[test]
+    fn people_get_hungry_and_eat() {
+        let mut w = world();
+        for _ in 0..TICKS_PER_DAY / 2 {
+            w.step();
+        }
+        assert!(
+            w.people.iter().all(|p| p.hunger > 0.0),
+            "half a day without food should make everyone hungry"
+        );
+        let mut peak: f32 = 0.0;
+        for _ in 0..TICKS_PER_DAY * 10 {
+            w.step();
+            peak = w.people.iter().map(|p| p.hunger).fold(peak, f32::max);
+            assert!(w.people.iter().all(|p| (0.0..=1.0).contains(&p.hunger)));
+        }
+        assert!(peak < 1.0, "foraging should keep people from starving");
     }
 
     #[test]
