@@ -12,6 +12,8 @@
     text-shadow: 1px 1px 0 rgba(0,0,0,.55); }
   #hud { top: 8px; }
   #status { bottom: 10px; }
+  #help { position: fixed; right: 12px; bottom: 10px; font-size: 12px; opacity: .6;
+    pointer-events: none; text-shadow: 1px 1px 0 rgba(0,0,0,.55); }
   #panel { position: fixed; top: 36px; right: 12px; min-width: 220px; max-width: 320px;
     padding: 10px 12px; background: rgba(24,26,36,.92); border: 1px solid #444;
     border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
@@ -33,6 +35,7 @@
 <canvas id="world"></canvas>
 <div id="hud"></div>
 <div id="status">Connecting…</div>
+<div id="help">Drag or WASD to move · scroll or +/− to zoom · 0 to see everything · F to follow selection</div>
 <aside id="panel" hidden>
   <header><span id="title"></span><button id="close" aria-label="Close">×</button></header>
   <div id="stats"></div>
@@ -77,6 +80,13 @@ let worldSize = [1, 1];
 let view = null;
 let selected = null;
 let layout = { scale: 1, x: 0, y: 0 };
+/** The camera: the world point at the centre of the screen, and pixels per
+ * world unit. Null until the first frame, which centres on the people. */
+let camera = null;
+const MAX_ZOOM = 8;
+const KEY_PAN_SPEED = 600; // CSS pixels per second
+const heldKeys = new Set();
+let lastPan = 0;
 
 // ---- Connection ----------------------------------------------------------
 
@@ -120,6 +130,26 @@ const eraIndex = (id) => catalog.eras.findIndex((e) => e.id === id);
 const eraName = (id) => catalog.eras[eraIndex(id)].name;
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const pad = (n) => String(n).padStart(2, "0");
+
+const minZoom = () => Math.min(innerWidth / worldSize[0], innerHeight / worldSize[1]);
+
+function clampCamera() {
+  const [ww, wh] = worldSize;
+  camera.scale = Math.min(Math.max(camera.scale, minZoom()), MAX_ZOOM);
+  camera.x = Math.min(Math.max(camera.x, 0), ww);
+  camera.y = Math.min(Math.max(camera.y, 0), wh);
+}
+
+function zoomAt(factor, px, py) {
+  const before = [(px - innerWidth / 2) / camera.scale + camera.x,
+                  (py - innerHeight / 2) / camera.scale + camera.y];
+  camera.scale *= factor;
+  clampCamera();
+  // Keep the world point under the pointer where it was.
+  camera.x = before[0] - (px - innerWidth / 2) / camera.scale;
+  camera.y = before[1] - (py - innerHeight / 2) / camera.scale;
+  clampCamera();
+}
 
 function toScreen(x, y) {
   return [layout.x + x * layout.scale, layout.y + y * layout.scale];
@@ -173,15 +203,25 @@ function draw() {
   if (!view || !catalog) return;
   const w = innerWidth, h = innerHeight;
   const [ww, wh] = worldSize;
-  const scale = Math.min(w / ww, h / wh);
-  layout = { scale, x: (w - ww * scale) / 2, y: (h - wh * scale) / 2 };
+  if (!camera) {
+    const px = view.people.reduce((s, p) => s + p.x, 0) / (view.people.length || 1);
+    const py = view.people.reduce((s, p) => s + p.y, 0) / (view.people.length || 1);
+    camera = { x: view.people.length ? px : ww / 2, y: view.people.length ? py : wh / 2, scale: 2 };
+  }
+  if (following && selected !== null) {
+    const target = find(selected);
+    if (target) { camera.x = target.item.x; camera.y = target.item.y; }
+  }
+  clampCamera();
+  const scale = camera.scale;
+  layout = { scale, x: w / 2 - camera.x * scale, y: h / 2 - camera.y * scale };
 
   ctx.fillStyle = "#0a0e23";
   ctx.fillRect(0, 0, w, h);
   ctx.fillStyle = groundColour(view.daylight);
   ctx.fillRect(layout.x, layout.y, ww * scale, wh * scale);
 
-  for (const d of view.deposits) drawDeposit(d);
+  for (const d of view.deposits) if (onScreen(d.x, d.y)) drawDeposit(d);
 
   const positions = new Map(view.people.map((p) => [p.id, toScreen(p.x, p.y)]));
   ctx.lineWidth = 1.5;
@@ -196,6 +236,7 @@ function draw() {
   }
 
   for (const a of view.animals) {
+    if (!onScreen(a.x, a.y)) continue;
     const [colour, size] = ANIMALS[a.species];
     const [x, y] = toScreen(a.x, a.y);
     ctx.fillStyle = colour;
@@ -221,7 +262,7 @@ function draw() {
     `knowledge ${view.knowledge.toFixed(0)}`;
 
   const entity = selected === null ? null : find(selected);
-  if (selected !== null && !entity) selected = null; // it's gone from the world
+  if (selected !== null && !entity) { selected = null; following = false; } // gone from the world
   if (entity) {
     const [x, y] = toScreen(entity.item.x, entity.item.y);
     ctx.strokeStyle = "#fff";
@@ -231,6 +272,11 @@ function draw() {
     ctx.stroke();
   }
   updatePanel(entity);
+}
+
+function onScreen(wx, wy) {
+  const [x, y] = toScreen(wx, wy);
+  return x > -20 && y > -20 && x < innerWidth + 20 && y < innerHeight + 20;
 }
 
 /** Trees and foraged plants are round, everything dug from the ground is
@@ -279,18 +325,78 @@ function pick(px, py) {
   return nearest([...view.people, ...view.animals]) ?? nearest(view.deposits);
 }
 
+let drag = null;
+canvas.addEventListener("pointerdown", (e) => {
+  if (!camera) return;
+  drag = { x: e.clientX, y: e.clientY, moved: false };
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+  drag.moved = true;
+  following = false;
+  camera.x -= dx / camera.scale;
+  camera.y -= dy / camera.scale;
+  drag.x = e.clientX;
+  drag.y = e.clientY;
+  canvas.style.cursor = "grabbing";
+  if (view) draw();
+});
+canvas.addEventListener("pointerup", () => { setTimeout(() => { drag = null; }); });
+canvas.addEventListener("wheel", (e) => {
+  if (!camera) return;
+  e.preventDefault();
+  zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY);
+  if (view) draw();
+}, { passive: false });
+
 canvas.addEventListener("click", (e) => {
-  if (!view || !catalog) return;
+  if (!view || !catalog || (drag && drag.moved)) return;
   selected = pick(e.clientX, e.clientY);
   draw();
 });
 canvas.addEventListener("mousemove", (e) => {
-  if (!view || !catalog) return;
+  if (!view || !catalog || (drag && drag.moved)) return;
   canvas.style.cursor = pick(e.clientX, e.clientY) === null ? "default" : "pointer";
 });
+let following = false;
+const PAN_KEYS = {
+  w: [0, -1], arrowup: [0, -1], s: [0, 1], arrowdown: [0, 1],
+  a: [-1, 0], arrowleft: [-1, 0], d: [1, 0], arrowright: [1, 0],
+};
 addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { selected = null; if (view) draw(); }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const key = e.key.toLowerCase();
+  if (key === "escape") { selected = null; following = false; if (view) draw(); }
+  else if (key in PAN_KEYS) { e.preventDefault(); following = false; heldKeys.add(key); startPan(); }
+  else if (!camera) return;
+  else if (key === "+" || key === "=") { zoomAt(1.25, innerWidth / 2, innerHeight / 2); if (view) draw(); }
+  else if (key === "-" || key === "_") { zoomAt(0.8, innerWidth / 2, innerHeight / 2); if (view) draw(); }
+  else if (key === "0") { camera.scale = 0; camera.x = worldSize[0] / 2; camera.y = worldSize[1] / 2; following = false; if (view) draw(); }
+  else if (key === "f") { following = selected !== null; }
 });
+addEventListener("keyup", (e) => { heldKeys.delete(e.key.toLowerCase()); });
+addEventListener("blur", () => heldKeys.clear());
+
+function startPan() {
+  if (lastPan) return;
+  lastPan = performance.now();
+  requestAnimationFrame(panStep);
+}
+
+function panStep(now) {
+  const dt = Math.min((now - lastPan) / 1000, 0.1);
+  lastPan = now;
+  let dx = 0, dy = 0;
+  for (const k of heldKeys) if (k in PAN_KEYS) { dx += PAN_KEYS[k][0]; dy += PAN_KEYS[k][1]; }
+  if (heldKeys.size === 0 || !camera) { lastPan = 0; return; }
+  camera.x += dx * KEY_PAN_SPEED * dt / camera.scale;
+  camera.y += dy * KEY_PAN_SPEED * dt / camera.scale;
+  if (view) draw();
+  requestAnimationFrame(panStep);
+}
 document.getElementById("close").addEventListener("click", () => {
   selected = null;
   if (view) draw();
