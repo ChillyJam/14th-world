@@ -1,36 +1,21 @@
-# Build and run the world server and desktop client.
+# Build and run the world server, which serves the web client.
 #
-#   make build                         build both binaries
-#   make run                           build, then run the server and a client
-#   make run-server                    run only the server
-#   make run-client SERVER=host:port   run only the client, against any server
+#   make build       build the server
+#   make run         build and run the server, then open http://localhost:8080
 #
 # Builds are optimised by default. Pass PROFILE=dev for faster, unoptimised
 # builds while iterating. On Windows, use make.cmd instead, which has the same
 # targets and needs no POSIX shell.
 
 PROFILE ?= release
-SERVER ?=
 
-BIN_DIR := target/$(if $(filter dev,$(PROFILE)),debug,$(PROFILE))
-
-.PHONY: build run run-server run-client clean
+.PHONY: build run clean
 
 build:
-	cargo build --profile $(PROFILE) --bin world-server --bin world-client
+	cargo build --profile $(PROFILE) --bin world-server
 
-# The client starts in the background and reconnects until the server is up.
-# The server stays in the foreground so Ctrl+C reaches it and it saves the
-# world before exiting. Closing the client window leaves the server running.
-run: build
-	$(BIN_DIR)/world-client &
-	$(BIN_DIR)/world-server
-
-run-server:
+run:
 	cargo run --profile $(PROFILE) --bin world-server
-
-run-client:
-	cargo run --profile $(PROFILE) --bin world-client -- $(SERVER)
 
 clean:
 	cargo clean

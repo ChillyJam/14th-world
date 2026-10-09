@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use axum::body::Bytes;
 use protocol::{ServerMsg, WorldView};
 use sim::{Event, World};
 use tokio::sync::watch;
@@ -18,7 +17,7 @@ pub async fn run(
     mut world: World,
     db: Db,
     config: Config,
-    frames: watch::Sender<Bytes>,
+    frames: watch::Sender<String>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     let mut ticker = interval(Duration::from_secs_f64(1.0 / config.tick_rate_hz));
@@ -50,8 +49,8 @@ pub async fn run(
     Ok(())
 }
 
-pub fn frame(world: &World) -> Bytes {
-    protocol::encode(&ServerMsg::Frame(WorldView::from(world))).into()
+pub fn frame(world: &World) -> String {
+    protocol::encode(&ServerMsg::Frame(WorldView::from(world)))
 }
 
 /// A failed periodic save must not kill a long-running world: the events stay
