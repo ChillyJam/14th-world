@@ -89,8 +89,9 @@ Without `make`: `cargo run --bin world-server`.
 
 Hungry people hunt: they chase the nearest deer or rabbit in sight and
 sometimes make the kill, which fills their stomach and shows in the event log.
-Nobody hunts wolves. Wild animals are born again over time, up to their
-starting numbers.
+Nobody hunts wolves, but wolves hunt deer and rabbits (those kills aren't
+logged). Wild animals are born again over time, up to their starting numbers,
+with the scarcest species born first.
 
 People reproduce: two adults (30 days old or more) who are fond of each other,
 well fed and standing together occasionally have a child, at most one per pair
