@@ -13,7 +13,9 @@ pub type EntityId = u64;
 pub const SNAPSHOT_VERSION: u32 = 3;
 
 const INITIAL_PEOPLE: usize = 4;
-const INITIAL_ANIMALS: usize = 24;
+/// The world is this many times wider and taller than the original 1024×768.
+const WORLD_SCALE: f32 = 10.0;
+const INITIAL_ANIMALS: usize = 240;
 const PERSON_SPEED: f32 = 0.6;
 const WANDER_RADIUS: f32 = 40.0;
 const MEET_RADIUS: f32 = 6.0;
@@ -74,8 +76,8 @@ pub struct WorldConfig {
 impl Default for WorldConfig {
     fn default() -> Self {
         Self {
-            width: 1024.0,
-            height: 768.0,
+            width: 1024.0 * WORLD_SCALE,
+            height: 768.0 * WORLD_SCALE,
         }
     }
 }
@@ -291,7 +293,7 @@ impl World {
             );
             self.add_deposit(material, position);
         }
-        for _ in 0..material.scattered() {
+        for _ in 0..material.scattered() * WORLD_SCALE as usize {
             let position = Vec2::new(
                 self.rng.range_f32(0.0, bounds.width),
                 self.rng.range_f32(0.0, bounds.height),
@@ -714,7 +716,7 @@ mod tests {
     use super::*;
 
     fn world() -> World {
-        World::new(1234, WorldConfig::default())
+        World::new(1235, WorldConfig::default())
     }
 
     #[test]

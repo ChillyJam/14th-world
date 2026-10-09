@@ -13,7 +13,11 @@ everything dug from the ground eventually runs out.
 
 The server is meant to run unattended for months. All state lives in SQLite,
 so the world survives restarts and redeploys. The server also serves a web
-page that renders the world live in any browser.
+page that renders the world live in any browser. New worlds are 10,240 ×
+7,680 units; in the page, drag or use WASD/arrow keys to move the camera,
+scroll or +/− to zoom, `0` to see the whole world and `F` to follow the
+selected person or animal. Worlds created before this change keep their old,
+smaller size.
 
 ## Architecture
 
