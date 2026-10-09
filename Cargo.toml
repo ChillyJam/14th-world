@@ -19,7 +19,3 @@ thiserror = "2"
 [profile.release]
 lto = "thin"
 codegen-units = 1
-
-# The wasm client is downloaded by every visitor, so optimise it for size.
-[profile.release.package.client]
-opt-level = "z"

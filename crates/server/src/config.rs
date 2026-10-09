@@ -1,6 +1,5 @@
 use std::env;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -11,7 +10,6 @@ use anyhow::{ensure, Context, Result};
 pub struct Config {
     pub bind: SocketAddr,
     pub database_url: String,
-    pub static_dir: PathBuf,
     /// Simulation ticks per real second. One tick is one in-world minute.
     pub tick_rate_hz: f64,
     pub snapshot_interval: Duration,
@@ -25,7 +23,6 @@ impl Config {
         let config = Self {
             bind: var("BIND_ADDR", SocketAddr::from(([0, 0, 0, 0], 8080)))?,
             database_url: var("DATABASE_URL", "sqlite://data/world.db".to_string())?,
-            static_dir: var("STATIC_DIR", PathBuf::from("crates/client/dist"))?,
             tick_rate_hz: var("TICK_RATE_HZ", 10.0)?,
             snapshot_interval: Duration::from_secs(var("SNAPSHOT_INTERVAL_SECS", 60u64)?),
             snapshots_to_keep: var("SNAPSHOTS_TO_KEEP", 24u32)?,

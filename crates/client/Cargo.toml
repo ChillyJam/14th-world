@@ -1,32 +1,19 @@
 [package]
 name = "client"
-description = "Browser front end, compiled to WebAssembly. Renders the world on a 2D canvas."
+description = "Native desktop front end. Connects to a world server and renders the world live."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[lib]
-crate-type = ["cdylib", "rlib"]
+[[bin]]
+name = "world-client"
+path = "src/main.rs"
 
 [dependencies]
 sim.workspace = true
 protocol.workspace = true
-console_error_panic_hook = "0.1"
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-
-[dependencies.web-sys]
-version = "0.3"
-features = [
-  "BinaryType",
-  "CanvasRenderingContext2d",
-  "CloseEvent",
-  "Document",
-  "Element",
-  "HtmlCanvasElement",
-  "Location",
-  "MessageEvent",
-  "WebSocket",
-  "Window",
-  "console",
-]
+eframe = "0.36"
+tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+# tungstenite's TLS support leaves the crypto backend to us. ring builds
+# everywhere without extra tools (aws-lc-rs needs CMake and NASM on Windows).
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
