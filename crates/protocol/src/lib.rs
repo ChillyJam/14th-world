@@ -7,7 +7,7 @@
 //!
 //! [`Welcome`]: ServerMsg::Welcome
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use sim::{EntityId, Era, Material, Species, World};
@@ -170,6 +170,7 @@ pub struct BondView {
 impl From<&World> for WorldView {
     fn from(world: &World) -> Self {
         let t = world.time;
+        let living: HashSet<EntityId> = world.people.iter().map(|p| p.id).collect();
         let mut acquaintances: HashMap<EntityId, u32> = HashMap::new();
         for &(a, b) in world.relationships().keys() {
             *acquaintances.entry(a).or_default() += 1;
@@ -222,7 +223,11 @@ impl From<&World> for WorldView {
             bonds: world
                 .relationships()
                 .iter()
-                .filter(|(_, rel)| rel.affinity >= MIN_VISIBLE_AFFINITY)
+                .filter(|(&(a, b), rel)| {
+                    rel.affinity >= MIN_VISIBLE_AFFINITY
+                        && living.contains(&a)
+                        && living.contains(&b)
+                })
                 .map(|(&(a, b), rel)| BondView {
                     a,
                     b,
