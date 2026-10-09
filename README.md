@@ -68,8 +68,19 @@ make run                              # build, then start the server and a clien
 
 `make run` keeps the server in the foreground and opens the client window
 alongside it. Use `make run-server` or `make run-client` to start just one,
-and add `PROFILE=dev` for quicker unoptimised builds. On Windows, `make` needs
-a POSIX shell such as Git Bash on `PATH`.
+and add `PROFILE=dev` for quicker unoptimised builds.
+
+On Windows, use `make.cmd` instead. It needs nothing but Rust and works from
+both Command Prompt and PowerShell:
+
+```powershell
+.\make build                          # build the server and client
+.\make run                            # build, then start the server and a client
+.\make run-client my-server.example:8080
+.\make run -Profile dev               # quicker unoptimised build
+```
+
+(In Command Prompt you can drop the `.\`.)
 
 Without `make`, run each binary in its own terminal:
 
