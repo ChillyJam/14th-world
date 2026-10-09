@@ -92,6 +92,20 @@ impl Material {
         )
     }
 
+    /// What one unit weighs, in kilograms. Foraged food is light, ore and
+    /// stone are heavy.
+    pub fn weight(self) -> u32 {
+        match self {
+            Material::Wood => 3,
+            Material::Stone => 5,
+            Material::Flint => 2,
+            Material::Clay => 4,
+            Material::Copper | Material::Tin => 4,
+            Material::Iron => 5,
+            Material::Berries | Material::Mushrooms | Material::Roots | Material::Grain => 1,
+        }
+    }
+
     /// Units a fresh deposit holds.
     pub fn capacity(self) -> u32 {
         match self {

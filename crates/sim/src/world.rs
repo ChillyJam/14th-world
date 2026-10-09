@@ -32,6 +32,8 @@ const FORAGE_THRESHOLD: f32 = 0.5;
 const FORAGE_CHANCE: f32 = 0.01;
 /// How much hunger one meal takes away.
 const MEAL: f32 = 0.4;
+/// The most weight, in kilograms, a person can carry.
+pub const CARRY_LIMIT: u32 = 40;
 /// How close a person has to be to a deposit to gather from it.
 const GATHER_RADIUS: f32 = 8.0;
 /// Chance per waking tick that a person next to a deposit gathers one unit.
@@ -86,6 +88,13 @@ pub struct Person {
     pub hunger: f32,
     /// Materials this person has gathered and is carrying.
     pub inventory: BTreeMap<Material, u32>,
+}
+
+impl Person {
+    /// Total weight of everything this person is carrying, in kilograms.
+    pub fn carried_weight(&self) -> u32 {
+        self.inventory.iter().map(|(m, n)| m.weight() * n).sum()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -433,7 +442,8 @@ impl World {
     }
 
     /// People standing next to a deposit their era can work sometimes take a
-    /// unit from it. When several are in reach they use the nearest.
+    /// unit from it, if they can still carry its weight. When several are in
+    /// reach they use the nearest.
     fn gather(&mut self) {
         let era = self.era;
         for person in &mut self.people {
@@ -441,10 +451,15 @@ impl World {
                 continue;
             }
             let here = person.position;
+            let load = person.carried_weight();
             let nearest = self
                 .deposits
                 .iter_mut()
-                .filter(|d| d.amount > 0 && d.material.era() <= era)
+                .filter(|d| {
+                    d.amount > 0
+                        && d.material.era() <= era
+                        && load + d.material.weight() <= CARRY_LIMIT
+                })
                 .map(|d| (d.position.distance(here), d))
                 .filter(|(dist, _)| *dist <= GATHER_RADIUS)
                 .min_by(|a, b| a.0.total_cmp(&b.0));
@@ -821,6 +836,10 @@ mod tests {
         assert!(!w.deposits.iter().any(|d| d.material == Material::Grain));
 
         w.knowledge = Era::Neolithic.threshold();
+        // Founders are weighed down by now; empty their hands so the harvest is theirs.
+        for p in &mut w.people {
+            p.inventory.clear();
+        }
         for _ in 0..TICKS_PER_DAY * 10 {
             w.step();
         }
@@ -838,6 +857,20 @@ mod tests {
             .filter_map(|p| p.inventory.get(&Material::Grain))
             .sum();
         assert!(grain > 0, "people should have harvested grain");
+    }
+
+    #[test]
+    fn people_never_carry_more_than_the_limit() {
+        let mut w = world();
+        w.knowledge = Era::Neolithic.threshold();
+        for _ in 0..TICKS_PER_DAY * 10 {
+            w.step();
+            assert!(w.people.iter().all(|p| p.carried_weight() <= CARRY_LIMIT));
+        }
+        assert!(
+            w.people.iter().any(|p| p.carried_weight() > 0),
+            "people should still gather"
+        );
     }
 
     #[test]

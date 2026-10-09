@@ -143,6 +143,11 @@ function formatDate(tick) {
   return `year ${year + 1}, day ${(day % catalog.days_per_year) + 1}`;
 }
 
+/** Total weight of an inventory, in kilograms. */
+function carriedWeight(inventory) {
+  return inventory.reduce((sum, [id, n]) => sum + material(id).weight * n, 0);
+}
+
 function formatInventory(inventory) {
   if (inventory.length === 0) return "Nothing";
   return inventory.map(([id, n]) => `${n} ${material(id).name}`).join(", ");
@@ -342,6 +347,7 @@ function updatePanel(entity) {
     row(table, "Hunger", hunger);
     row(table, "Has met", plural(item.acquaintances, "person").replace("persons", "people"));
     row(table, "Carrying", formatInventory(item.inventory));
+    row(table, "Load", `${carriedWeight(item.inventory)} / ${catalog.carry_limit} kg`);
     row(table, "Position", `${item.x.toFixed(0)}, ${item.y.toFixed(0)}`);
   } else if (kind === "animal") {
     const info = species(item.species);

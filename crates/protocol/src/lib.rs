@@ -35,6 +35,8 @@ pub enum ServerMsg {
 pub struct Catalog {
     pub ticks_per_day: u64,
     pub days_per_year: u64,
+    /// The most, in kilograms, that a person can carry.
+    pub carry_limit: u32,
     /// In order, earliest first.
     pub eras: Vec<EraInfo>,
     pub materials: Vec<MaterialInfo>,
@@ -56,6 +58,8 @@ pub struct MaterialInfo {
     /// The first era in which it can be gathered.
     pub era: Era,
     pub forage: bool,
+    /// In kilograms.
+    pub weight: u32,
     pub capacity: u32,
     pub regrowth_per_day: u32,
 }
@@ -72,6 +76,7 @@ impl Catalog {
         Self {
             ticks_per_day: sim::TICKS_PER_DAY,
             days_per_year: sim::DAYS_PER_YEAR,
+            carry_limit: sim::CARRY_LIMIT,
             eras: Era::ALL
                 .into_iter()
                 .map(|id| EraInfo {
@@ -87,6 +92,7 @@ impl Catalog {
                     deposit_name: id.deposit_name().to_owned(),
                     era: id.era(),
                     forage: id.is_forage(),
+                    weight: id.weight(),
                     capacity: id.capacity(),
                     regrowth_per_day: id.regrowth_per_day(),
                 })
