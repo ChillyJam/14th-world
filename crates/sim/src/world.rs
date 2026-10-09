@@ -1088,8 +1088,10 @@ mod tests {
         for p in &mut w.people {
             p.inventory.clear();
         }
+        let mut peak_population = w.people.len();
         for _ in 0..TICKS_PER_DAY * 10 {
             w.step();
+            peak_population = peak_population.max(w.people.len());
         }
         assert!(w.era >= Era::Neolithic);
         let fields = w
@@ -1098,7 +1100,8 @@ mod tests {
             .filter(|d| d.material == Material::Grain)
             .count();
         assert!(fields > 0, "people should have sown fields");
-        assert!(fields <= MAX_FIELDS_PER_PERSON * w.people.len());
+        // Fields outlive the people who sowed them, so bound by the peak population.
+        assert!(fields <= MAX_FIELDS_PER_PERSON * peak_population);
         let grain: u32 = w
             .people
             .iter()
@@ -1197,7 +1200,14 @@ mod tests {
 
     #[test]
     fn people_have_children() {
-        let mut w = world();
+        // A small world, so the founders actually cross paths.
+        let mut w = World::new(
+            1235,
+            WorldConfig {
+                width: 1024.0,
+                height: 768.0,
+            },
+        );
         let mut born = 0;
         let mut died = 0;
         for _ in 0..TICKS_PER_DAY * 120 {
