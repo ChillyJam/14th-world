@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use serde::{Deserialize, Serialize};
 use sim::{DeathCause, EntityId, Era, Event, Material, Species, World};
 
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// How many log entries the server remembers for newly connected clients.
 pub const LOG_CAPACITY: usize = 2000;
@@ -125,6 +125,10 @@ impl EventLog {
                     self.name(q)
                 ),
                 vec![child, p, q],
+            ),
+            Event::FocusChanged { person, focus } => (
+                format!("{} began {}", self.name(person), focus.description()),
+                vec![person],
             ),
             Event::EraReached { era } => (format!("The {} began", era.name()), vec![]),
             Event::Died { person, cause } => (
@@ -259,6 +263,8 @@ pub struct PersonView {
     pub knowledge: f64,
     /// 0.0 = full, 1.0 = starving.
     pub hunger: f32,
+    /// What the person is doing, e.g. "gathering wood".
+    pub focus: String,
     /// Everyone this person has ever met, including bonds too weak to send.
     pub acquaintances: u32,
     /// Materials carried, in [`Material`] order. Only those with a count.
@@ -330,6 +336,7 @@ impl From<&World> for WorldView {
                     parents: p.parents,
                     knowledge: p.knowledge,
                     hunger: p.hunger,
+                    focus: p.focus.description(),
                     acquaintances: acquaintances.get(&p.id).copied().unwrap_or(0),
                     inventory: p.inventory.iter().map(|(&m, &n)| (m, n)).collect(),
                 })

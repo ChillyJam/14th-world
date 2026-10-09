@@ -10,7 +10,7 @@ pub type EntityId = u64;
 /// Bump whenever [`World`]'s serialized layout changes. Snapshots written with
 /// an unknown version are refused rather than silently misread; older known
 /// versions are migrated in [`World::from_snapshot`].
-pub const SNAPSHOT_VERSION: u32 = 4;
+pub const SNAPSHOT_VERSION: u32 = 5;
 
 const INITIAL_PEOPLE: usize = 4;
 /// The world is this many times wider and taller than the original 1024×768.
@@ -46,6 +46,9 @@ pub const CARRY_LIMIT: u32 = 40;
 const GATHER_RADIUS: f32 = 8.0;
 /// Chance per waking tick that a person next to a deposit gathers one unit.
 const GATHER_CHANCE: f32 = 0.05;
+/// A person keeps a focus at least this many ticks before changing it, so
+/// walking past a deposit doesn't flood the log. Sleep and waking are exempt.
+const MIN_FOCUS_TICKS: u64 = 30;
 /// Chance per waking tick that a person in a farming era sows a new field.
 const PLANT_CHANCE: f32 = 0.002;
 /// Fields each person tends, at most, so farmland stays bounded.
@@ -110,6 +113,34 @@ pub struct Person {
     pub hunger: f32,
     /// Materials this person has gathered and is carrying.
     pub inventory: BTreeMap<Material, u32>,
+    /// What this person is doing right now.
+    pub focus: Focus,
+    /// The tick at which [`Person::focus`] last changed.
+    pub focus_since: u64,
+}
+
+/// What a person is currently busy with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Focus {
+    #[default]
+    Wandering,
+    Sleeping,
+    /// Hungry and looking for something to eat.
+    Foraging,
+    /// Standing at a deposit of this material.
+    Gathering(Material),
+}
+
+impl Focus {
+    /// Reads as "is {description}", e.g. "gathering Wood".
+    pub fn description(self) -> String {
+        match self {
+            Focus::Wandering => "wandering".to_owned(),
+            Focus::Sleeping => "sleeping".to_owned(),
+            Focus::Foraging => "foraging for food".to_owned(),
+            Focus::Gathering(m) => format!("gathering {}", m.name().to_lowercase()),
+        }
+    }
 }
 
 impl Person {
@@ -191,6 +222,11 @@ pub enum Event {
         person: EntityId,
         cause: DeathCause,
     },
+    /// A person switched to doing something else.
+    FocusChanged {
+        person: EntityId,
+        focus: Focus,
+    },
 }
 
 impl Event {
@@ -200,6 +236,7 @@ impl Event {
             Event::Born { .. } => "born",
             Event::EraReached { .. } => "era_reached",
             Event::Died { .. } => "died",
+            Event::FocusChanged { .. } => "focus_changed",
         }
     }
 }
@@ -262,6 +299,8 @@ impl World {
                 knowledge: 0.0,
                 hunger: 0.0,
                 inventory: BTreeMap::new(),
+                focus: Focus::default(),
+                focus_since: 0,
             });
         }
 
@@ -384,6 +423,7 @@ impl World {
             self.plant();
             self.gather();
         }
+        self.update_focus(asleep, &mut events);
 
         if self.time.tick.is_multiple_of(TICKS_PER_DAY) {
             for deposit in &mut self.deposits {
@@ -523,6 +563,8 @@ impl World {
                     knowledge: 0.0,
                     hunger: 0.0,
                     inventory: BTreeMap::new(),
+                    focus: Focus::default(),
+                    focus_since: tick,
                 });
                 events.push(Event::Born {
                     child: id,
@@ -593,6 +635,41 @@ impl World {
         }
     }
 
+    /// Works out what each person is doing, and records a change of focus.
+    fn update_focus(&mut self, asleep: bool, events: &mut Vec<Event>) {
+        let tick = self.time.tick;
+        let era = self.era;
+        for person in &mut self.people {
+            let wanted = if asleep {
+                Focus::Sleeping
+            } else if person.hunger >= FORAGE_THRESHOLD {
+                Focus::Foraging
+            } else {
+                let load = person.carried_weight();
+                let here = person.position;
+                self.deposits
+                    .iter()
+                    .find(|d| {
+                        d.amount > 0
+                            && d.material.era() <= era
+                            && load + d.material.weight() <= CARRY_LIMIT
+                            && d.position.distance(here) <= GATHER_RADIUS
+                    })
+                    .map_or(Focus::Wandering, |d| Focus::Gathering(d.material))
+            };
+            let settled = tick - person.focus_since >= MIN_FOCUS_TICKS;
+            let waking = wanted == Focus::Sleeping || person.focus == Focus::Sleeping;
+            if wanted != person.focus && (settled || waking) {
+                person.focus = wanted;
+                person.focus_since = tick;
+                events.push(Event::FocusChanged {
+                    person: person.id,
+                    focus: wanted,
+                });
+            }
+        }
+    }
+
     pub fn to_snapshot(&self) -> Result<Vec<u8>, SnapshotError> {
         Ok(postcard::to_stdvec(&(SNAPSHOT_VERSION, self))?)
     }
@@ -608,6 +685,11 @@ impl World {
             1 => Ok(postcard::from_bytes::<v1::World>(rest)?.into()),
             2 => {
                 let mut world: Self = postcard::from_bytes::<v2::World>(rest)?.into();
+                world.add_missing_deposits();
+                Ok(world)
+            }
+            4 => {
+                let mut world: Self = postcard::from_bytes::<v4::World>(rest)?.into();
                 world.add_missing_deposits();
                 Ok(world)
             }
@@ -693,6 +775,8 @@ mod v1 {
                         knowledge: p.knowledge,
                         hunger: 0.0,
                         inventory: BTreeMap::new(),
+                        focus: Focus::default(),
+                        focus_since: 0,
                     })
                     .collect(),
                 animals: old.animals,
@@ -759,6 +843,8 @@ mod v2 {
                         knowledge: p.knowledge,
                         hunger: 0.0,
                         inventory: p.inventory,
+                        focus: Focus::default(),
+                        focus_since: 0,
                     })
                     .collect(),
                 animals: old.animals,
@@ -824,6 +910,8 @@ mod v3 {
                         knowledge: p.knowledge,
                         hunger: p.hunger,
                         inventory: p.inventory,
+                        focus: Focus::default(),
+                        focus_since: 0,
                     })
                     .collect(),
                 animals: old.animals,
@@ -863,6 +951,74 @@ fn wander(
     } else {
         pos.x += (target.x - pos.x) / dist * speed;
         pos.y += (target.y - pos.y) / dist * speed;
+    }
+}
+
+/// The snapshot layout before people had a focus.
+mod v4 {
+    use super::*;
+
+    #[derive(Serialize, Deserialize)]
+    pub struct Person {
+        pub id: EntityId,
+        pub name: String,
+        pub born_tick: u64,
+        pub parents: Option<(EntityId, EntityId)>,
+        pub home: Vec2,
+        pub position: Vec2,
+        pub target: Vec2,
+        pub knowledge: f64,
+        pub hunger: f32,
+        pub inventory: BTreeMap<Material, u32>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    pub struct World {
+        pub config: WorldConfig,
+        pub time: WorldTime,
+        pub era: Era,
+        pub knowledge: f64,
+        pub people: Vec<Person>,
+        pub animals: Vec<Animal>,
+        pub deposits: Vec<Deposit>,
+        pub relationships: BTreeMap<(EntityId, EntityId), Relationship>,
+        pub rng: Rng,
+        pub next_id: EntityId,
+    }
+
+    /// Everyone starts out wandering.
+    impl From<World> for super::World {
+        fn from(old: World) -> Self {
+            Self {
+                config: old.config,
+                time: old.time,
+                era: old.era,
+                knowledge: old.knowledge,
+                people: old
+                    .people
+                    .into_iter()
+                    .map(|p| super::Person {
+                        id: p.id,
+                        name: p.name,
+                        born_tick: p.born_tick,
+                        parents: p.parents,
+                        home: p.home,
+                        position: p.position,
+                        target: p.target,
+                        knowledge: p.knowledge,
+                        hunger: p.hunger,
+                        inventory: p.inventory,
+                        focus: Focus::default(),
+                        focus_since: 0,
+                    })
+                    .collect(),
+                animals: old.animals,
+                deposits: old.deposits,
+                relationships: old.relationships,
+                rng: old.rng,
+                next_id: old.next_id,
+            }
+        }
     }
 }
 
@@ -1246,6 +1402,25 @@ mod tests {
     }
 
     #[test]
+    fn people_change_focus_and_it_is_an_event() {
+        let mut w = world();
+        let mut changes = 0;
+        for _ in 0..TICKS_PER_DAY * 2 {
+            for e in w.step() {
+                if let Event::FocusChanged { person, focus } = e {
+                    changes += 1;
+                    assert_eq!(
+                        w.people.iter().find(|p| p.id == person).map(|p| p.focus),
+                        Some(focus)
+                    );
+                }
+            }
+        }
+        assert!(changes > 0, "people should sleep and wake at least");
+        assert!(w.people.iter().all(|p| p.focus_since <= w.time.tick));
+    }
+
+    #[test]
     fn migrates_v3_snapshots() {
         let mut w = world();
         for _ in 0..TICKS_PER_DAY {
@@ -1279,6 +1454,10 @@ mod tests {
         };
         let bytes = postcard::to_stdvec(&(3u32, old)).unwrap();
         let migrated = World::from_snapshot(&bytes).unwrap();
+        for p in &mut w.people {
+            p.focus = Focus::default();
+            p.focus_since = 0;
+        }
         assert_eq!(migrated, w);
     }
 }
