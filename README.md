@@ -87,6 +87,11 @@ from both Command Prompt and PowerShell:
 
 Without `make`: `cargo run --bin world-server`.
 
+Hungry people hunt: they chase the nearest deer or rabbit in sight and
+sometimes make the kill, which fills their stomach and shows in the event log.
+Nobody hunts wolves. Wild animals are born again over time, up to their
+starting numbers.
+
 People reproduce: two adults (30 days old or more) who are fond of each other,
 well fed and standing together occasionally have a child, at most one per pair
 every 30 days. The population stops growing at 200. A person's panel lists

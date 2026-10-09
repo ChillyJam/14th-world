@@ -49,6 +49,15 @@ const GATHER_CHANCE: f32 = 0.05;
 /// A person keeps a focus at least this many ticks before changing it, so
 /// walking past a deposit doesn't flood the log. Sleep and waking are exempt.
 const MIN_FOCUS_TICKS: u64 = 30;
+/// Hungry people chase prey they can see this far away.
+const HUNT_SIGHT: f32 = 60.0;
+/// A hunter can strike prey this close.
+const HUNT_REACH: f32 = 4.0;
+/// Chance per waking tick that a hunter within reach makes the kill.
+const HUNT_CHANCE: f32 = 0.2;
+/// New animals appear this many times a day while the wild is below its
+/// starting numbers, so hunting thins the herds without emptying the world.
+const ANIMAL_BIRTHS_PER_DAY: usize = 2;
 /// Chance per waking tick that a person in a farming era sows a new field.
 const PLANT_CHANCE: f32 = 0.002;
 /// Fields each person tends, at most, so farmland stays bounded.
@@ -129,6 +138,8 @@ pub enum Focus {
     Foraging,
     /// Standing at a deposit of this material.
     Gathering(Material),
+    /// Chasing this kind of animal for food.
+    Hunting(Species),
 }
 
 impl Focus {
@@ -139,6 +150,7 @@ impl Focus {
             Focus::Sleeping => "sleeping".to_owned(),
             Focus::Foraging => "foraging for food".to_owned(),
             Focus::Gathering(m) => format!("gathering {}", m.name().to_lowercase()),
+            Focus::Hunting(s) => format!("hunting {}", s.name().to_lowercase()),
         }
     }
 }
@@ -174,6 +186,16 @@ impl Species {
             Species::Deer => 0.8,
             Species::Rabbit => 1.0,
             Species::Wolf => 1.2,
+        }
+    }
+
+    /// How much hunger a kill takes away. `None` for animals people do not
+    /// hunt.
+    pub fn meal(self) -> Option<f32> {
+        match self {
+            Species::Deer => Some(0.8),
+            Species::Rabbit => Some(0.3),
+            Species::Wolf => None,
         }
     }
 }
@@ -222,6 +244,11 @@ pub enum Event {
         person: EntityId,
         cause: DeathCause,
     },
+    /// A person killed an animal for food.
+    Hunted {
+        hunter: EntityId,
+        species: Species,
+    },
     /// A person switched to doing something else.
     FocusChanged {
         person: EntityId,
@@ -236,6 +263,7 @@ impl Event {
             Event::Born { .. } => "born",
             Event::EraReached { .. } => "era_reached",
             Event::Died { .. } => "died",
+            Event::Hunted { .. } => "hunted",
             Event::FocusChanged { .. } => "focus_changed",
         }
     }
@@ -422,6 +450,7 @@ impl World {
             self.reproduce(&mut events);
             self.plant();
             self.gather();
+            self.hunt(&mut events);
         }
         self.update_focus(asleep, &mut events);
 
@@ -430,6 +459,14 @@ impl World {
                 let regrown = deposit.amount + deposit.material.regrowth_per_day();
                 deposit.amount = regrown.min(deposit.material.capacity());
             }
+        }
+
+        if self
+            .time
+            .tick
+            .is_multiple_of(TICKS_PER_DAY / ANIMAL_BIRTHS_PER_DAY as u64)
+        {
+            self.repopulate_animals();
         }
 
         for animal in &mut self.animals {
@@ -635,6 +672,66 @@ impl World {
         }
     }
 
+    /// The nearest animal a hungry person at `here` would chase, as an index
+    /// into `animals`.
+    fn nearest_prey(animals: &[Animal], here: Vec2) -> Option<usize> {
+        animals
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.species.meal().is_some())
+            .map(|(i, a)| (a.position.distance(here), i))
+            .filter(|(dist, _)| *dist <= HUNT_SIGHT)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, i)| i)
+    }
+
+    /// Hungry people chase the nearest prey in sight and sometimes kill it
+    /// once they are close, eating their fill.
+    fn hunt(&mut self, events: &mut Vec<Event>) {
+        for person in &mut self.people {
+            if person.hunger < FORAGE_THRESHOLD {
+                continue;
+            }
+            let Some(i) = Self::nearest_prey(&self.animals, person.position) else {
+                continue;
+            };
+            let prey = &self.animals[i];
+            if prey.position.distance(person.position) <= HUNT_REACH && self.rng.chance(HUNT_CHANCE)
+            {
+                let species = prey.species;
+                person.hunger = (person.hunger - species.meal().unwrap_or(0.0)).max(0.0);
+                events.push(Event::Hunted {
+                    hunter: person.id,
+                    species,
+                });
+                self.animals.remove(i);
+            } else {
+                person.target = prey.position;
+            }
+        }
+    }
+
+    /// Wild animals are born until the wild is back to its starting numbers.
+    fn repopulate_animals(&mut self) {
+        for _ in 0..ANIMAL_BIRTHS_PER_DAY {
+            if self.animals.len() >= INITIAL_ANIMALS {
+                return;
+            }
+            let id = self.alloc_id();
+            let species = Species::ALL[self.rng.below(Species::ALL.len() as u64) as usize];
+            let position = Vec2::new(
+                self.rng.range_f32(0.0, self.config.width),
+                self.rng.range_f32(0.0, self.config.height),
+            );
+            self.animals.push(Animal {
+                id,
+                species,
+                position,
+                target: position,
+            });
+        }
+    }
+
     /// Works out what each person is doing, and records a change of focus.
     fn update_focus(&mut self, asleep: bool, events: &mut Vec<Event>) {
         let tick = self.time.tick;
@@ -643,7 +740,8 @@ impl World {
             let wanted = if asleep {
                 Focus::Sleeping
             } else if person.hunger >= FORAGE_THRESHOLD {
-                Focus::Foraging
+                Self::nearest_prey(&self.animals, person.position)
+                    .map_or(Focus::Foraging, |i| Focus::Hunting(self.animals[i].species))
             } else {
                 let load = person.carried_weight();
                 let here = person.position;
@@ -1418,6 +1516,69 @@ mod tests {
         }
         assert!(changes > 0, "people should sleep and wake at least");
         assert!(w.people.iter().all(|p| p.focus_since <= w.time.tick));
+    }
+
+    fn lone_hunter_with(species: Species) -> World {
+        let mut w = world();
+        w.time.tick = TICKS_PER_DAY / 2; // midday
+        w.people.truncate(1);
+        w.animals.clear();
+        let at = w.people[0].position;
+        let id = w.alloc_id();
+        w.animals.push(Animal {
+            id,
+            species,
+            position: at,
+            target: at,
+        });
+        w
+    }
+
+    #[test]
+    fn hungry_people_hunt_nearby_prey() {
+        let mut w = lone_hunter_with(Species::Deer);
+        let mut killed = false;
+        for _ in 0..50 {
+            w.people[0].hunger = 0.9;
+            killed |= w.step().iter().any(|e| {
+                matches!(
+                    e,
+                    Event::Hunted {
+                        species: Species::Deer,
+                        ..
+                    }
+                )
+            });
+            if killed {
+                break;
+            }
+        }
+        assert!(killed, "a hungry person next to a deer should kill it");
+        assert!(w.animals.is_empty());
+        assert!(w.people[0].hunger < 0.9);
+    }
+
+    #[test]
+    fn nobody_hunts_wolves_or_when_full() {
+        for (species, hunger) in [(Species::Wolf, 0.9), (Species::Deer, 0.0)] {
+            let mut w = lone_hunter_with(species);
+            for _ in 0..20 {
+                w.people[0].hunger = hunger;
+                assert!(!w.step().iter().any(|e| matches!(e, Event::Hunted { .. })));
+            }
+            assert_eq!(w.animals.len(), 1);
+        }
+    }
+
+    #[test]
+    fn animals_repopulate_but_stay_capped() {
+        let mut w = world();
+        w.animals.truncate(10);
+        for _ in 0..TICKS_PER_DAY * 3 {
+            w.step();
+        }
+        assert!(w.animals.len() > 10);
+        assert!(w.animals.len() <= INITIAL_ANIMALS);
     }
 
     #[test]
