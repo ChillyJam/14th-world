@@ -32,8 +32,14 @@ pub async fn run(
             _ = shutdown.cancelled() => break,
             _ = ticker.tick() => {
                 for event in world.step() {
-                    if let Event::EraReached { era } = event {
-                        info!(tick = world.time.tick, era = era.name(), "new era reached");
+                    match &event {
+                        Event::EraReached { era } => {
+                            info!(tick = world.time.tick, era = era.name(), "new era reached");
+                        }
+                        Event::Died { person, cause } => {
+                            info!(tick = world.time.tick, person, ?cause, "someone died");
+                        }
+                        Event::Met { .. } | Event::Born { .. } => {}
                     }
                     pending.push((world.time.tick, event));
                 }

@@ -15,6 +15,6 @@ pub use material::{Deposit, Material};
 pub use rng::Rng;
 pub use time::{WorldTime, DAYS_PER_YEAR, TICKS_PER_DAY};
 pub use world::{
-    Animal, EntityId, Event, Person, Relationship, SnapshotError, Species, Vec2, World,
-    WorldConfig, MAX_PEOPLE, SNAPSHOT_VERSION,
+    Animal, DeathCause, EntityId, Event, Person, Relationship, SnapshotError, Species, Vec2, World,
+    WorldConfig, CARRY_LIMIT, MAX_PEOPLE, SNAPSHOT_VERSION,
 };

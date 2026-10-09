@@ -32,6 +32,14 @@ const FORAGE_THRESHOLD: f32 = 0.5;
 const FORAGE_CHANCE: f32 = 0.01;
 /// How much hunger one meal takes away.
 const MEAL: f32 = 0.4;
+/// Chance per tick that someone who is starving dies of it: about a day.
+const STARVATION_CHANCE: f32 = 1.0 / TICKS_PER_DAY as f32;
+/// People start to die of old age after this many years.
+const OLD_AGE_YEARS: u64 = 60;
+/// Chance per tick of dying once old: about a month's life left on average.
+const OLD_AGE_CHANCE: f32 = 1.0 / (30 * TICKS_PER_DAY) as f32;
+/// The most weight, in kilograms, a person can carry.
+pub const CARRY_LIMIT: u32 = 40;
 /// How close a person has to be to a deposit to gather from it.
 const GATHER_RADIUS: f32 = 8.0;
 /// Chance per waking tick that a person next to a deposit gathers one unit.
@@ -102,6 +110,13 @@ pub struct Person {
     pub inventory: BTreeMap<Material, u32>,
 }
 
+impl Person {
+    /// Total weight of everything this person is carrying, in kilograms.
+    pub fn carried_weight(&self) -> u32 {
+        self.inventory.iter().map(|(m, n)| m.weight() * n).sum()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Species {
     Deer,
@@ -147,6 +162,13 @@ pub struct Relationship {
     pub last_met: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeathCause {
+    Starvation,
+    OldAge,
+}
+
 /// Something notable that happened during a step. The server appends these to
 /// the history log.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -163,6 +185,10 @@ pub enum Event {
     EraReached {
         era: Era,
     },
+    Died {
+        person: EntityId,
+        cause: DeathCause,
+    },
 }
 
 impl Event {
@@ -171,6 +197,7 @@ impl Event {
             Event::Met { .. } => "met",
             Event::Born { .. } => "born",
             Event::EraReached { .. } => "era_reached",
+            Event::Died { .. } => "died",
         }
     }
 }
@@ -334,6 +361,7 @@ impl World {
                 person.hunger = (person.hunger - MEAL).max(0.0);
             }
         }
+        self.deaths(&mut events);
         if !asleep {
             for person in &mut self.people {
                 wander(
@@ -382,6 +410,28 @@ impl World {
         }
 
         events
+    }
+
+    /// The starving and the very old may die. Their relationships remain as
+    /// history, but they no longer move, gather or meet anyone.
+    fn deaths(&mut self, events: &mut Vec<Event>) {
+        let tick = self.time.tick;
+        let rng = &mut self.rng;
+        self.people.retain(|p| {
+            let age_years = (tick - p.born_tick) / (TICKS_PER_DAY * crate::DAYS_PER_YEAR);
+            let cause = if p.hunger >= 1.0 && rng.chance(STARVATION_CHANCE) {
+                DeathCause::Starvation
+            } else if age_years >= OLD_AGE_YEARS && rng.chance(OLD_AGE_CHANCE) {
+                DeathCause::OldAge
+            } else {
+                return true;
+            };
+            events.push(Event::Died {
+                person: p.id,
+                cause,
+            });
+            false
+        });
     }
 
     /// People who come close form or strengthen relationships and learn from
@@ -513,7 +563,8 @@ impl World {
     }
 
     /// People standing next to a deposit their era can work sometimes take a
-    /// unit from it. When several are in reach they use the nearest.
+    /// unit from it, if they can still carry its weight. When several are in
+    /// reach they use the nearest.
     fn gather(&mut self) {
         let era = self.era;
         for person in &mut self.people {
@@ -521,10 +572,15 @@ impl World {
                 continue;
             }
             let here = person.position;
+            let load = person.carried_weight();
             let nearest = self
                 .deposits
                 .iter_mut()
-                .filter(|d| d.amount > 0 && d.material.era() <= era)
+                .filter(|d| {
+                    d.amount > 0
+                        && d.material.era() <= era
+                        && load + d.material.weight() <= CARRY_LIMIT
+                })
                 .map(|d| (d.position.distance(here), d))
                 .filter(|(dist, _)| *dist <= GATHER_RADIUS)
                 .min_by(|a, b| a.0.total_cmp(&b.0));
@@ -880,6 +936,59 @@ mod tests {
     }
 
     #[test]
+    fn the_starving_die() {
+        let mut w = world();
+        // Nothing to eat: tick 1 is at night, so nobody forages.
+        for p in &mut w.people {
+            p.hunger = 1.0;
+        }
+        let mut died = Vec::new();
+        for _ in 0..TICKS_PER_DAY * 3 {
+            for p in &mut w.people {
+                p.hunger = 1.0;
+            }
+            for e in w.step() {
+                if let Event::Died { person, cause } = e {
+                    assert_eq!(cause, DeathCause::Starvation);
+                    died.push(person);
+                }
+            }
+        }
+        assert!(!died.is_empty(), "starving people should die");
+        assert_eq!(w.people.len() + died.len(), INITIAL_PEOPLE);
+        assert!(w.people.iter().all(|p| !died.contains(&p.id)));
+    }
+
+    #[test]
+    fn the_old_die() {
+        let mut w = world();
+        w.time.tick = OLD_AGE_YEARS * crate::DAYS_PER_YEAR * TICKS_PER_DAY;
+        let founders: Vec<_> = w.people.iter().map(|p| p.id).collect();
+        for _ in 0..TICKS_PER_DAY * 365 {
+            for p in &mut w.people {
+                p.hunger = 0.0;
+            }
+            w.step();
+        }
+        assert!(
+            w.people.iter().all(|p| !founders.contains(&p.id)),
+            "every founder should have died of old age"
+        );
+    }
+
+    #[test]
+    fn the_young_do_not_die_of_old_age() {
+        let mut w = world();
+        for _ in 0..TICKS_PER_DAY * 20 {
+            for p in &mut w.people {
+                p.hunger = 0.0;
+            }
+            w.step();
+        }
+        assert_eq!(w.people.len(), INITIAL_PEOPLE);
+    }
+
+    #[test]
     fn entities_stay_in_bounds() {
         let mut w = world();
         for _ in 0..TICKS_PER_DAY * 2 {
@@ -973,6 +1082,10 @@ mod tests {
         assert!(!w.deposits.iter().any(|d| d.material == Material::Grain));
 
         w.knowledge = Era::Neolithic.threshold();
+        // Founders are weighed down by now; empty their hands so the harvest is theirs.
+        for p in &mut w.people {
+            p.inventory.clear();
+        }
         for _ in 0..TICKS_PER_DAY * 10 {
             w.step();
         }
@@ -990,6 +1103,20 @@ mod tests {
             .filter_map(|p| p.inventory.get(&Material::Grain))
             .sum();
         assert!(grain > 0, "people should have harvested grain");
+    }
+
+    #[test]
+    fn people_never_carry_more_than_the_limit() {
+        let mut w = world();
+        w.knowledge = Era::Neolithic.threshold();
+        for _ in 0..TICKS_PER_DAY * 10 {
+            w.step();
+            assert!(w.people.iter().all(|p| p.carried_weight() <= CARRY_LIMIT));
+        }
+        assert!(
+            w.people.iter().any(|p| p.carried_weight() > 0),
+            "people should still gather"
+        );
     }
 
     #[test]
@@ -1070,18 +1197,24 @@ mod tests {
     fn people_have_children() {
         let mut w = world();
         let mut born = 0;
+        let mut died = 0;
         for _ in 0..TICKS_PER_DAY * 120 {
             for e in w.step() {
-                if let Event::Born { child, parents } = e {
-                    born += 1;
-                    let kid = w.people.iter().find(|p| p.id == child).unwrap();
-                    assert_eq!(kid.parents, Some(parents));
-                    assert!(kid.born_tick >= ADULT_AGE, "children cannot have children");
+                match e {
+                    Event::Born { child, parents } => {
+                        born += 1;
+                        if let Some(kid) = w.people.iter().find(|p| p.id == child) {
+                            assert_eq!(kid.parents, Some(parents));
+                            assert!(kid.born_tick >= ADULT_AGE, "children cannot have children");
+                        }
+                    }
+                    Event::Died { .. } => died += 1,
+                    _ => {}
                 }
             }
         }
         assert!(born > 0, "the founders should have children within months");
-        assert_eq!(w.people.len(), INITIAL_PEOPLE + born);
+        assert_eq!(w.people.len() + died, INITIAL_PEOPLE + born);
     }
 
     #[test]
