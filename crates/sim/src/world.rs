@@ -26,6 +26,10 @@ const DISCOVERY_CHANCE: f32 = 0.002;
 const GATHER_RADIUS: f32 = 8.0;
 /// Chance per waking tick that a person next to a deposit gathers one unit.
 const GATHER_CHANCE: f32 = 0.05;
+/// Chance per waking tick that a person in a farming era sows a new field.
+const PLANT_CHANCE: f32 = 0.002;
+/// Fields each person tends, at most, so farmland stays bounded.
+const MAX_FIELDS_PER_PERSON: usize = 2;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Vec2 {
@@ -276,6 +280,7 @@ impl World {
                 }
             }
             self.encounters(&mut events);
+            self.plant();
             self.gather();
         }
 
@@ -347,6 +352,38 @@ impl World {
                     self.knowledge += 2.0 * KNOWLEDGE_PER_ENCOUNTER;
                 }
             }
+        }
+    }
+
+    /// Once the world knows farming, people sow fields near where they are.
+    /// A new field starts bare and ripens a little each day.
+    fn plant(&mut self) {
+        if self.era < Material::Grain.era() {
+            return;
+        }
+        let bounds = self.config;
+        let mut fields = self
+            .deposits
+            .iter()
+            .filter(|d| d.material == Material::Grain)
+            .count();
+        for i in 0..self.people.len() {
+            if fields >= MAX_FIELDS_PER_PERSON * self.people.len() {
+                break;
+            }
+            if !self.rng.chance(PLANT_CHANCE) {
+                continue;
+            }
+            let here = self.people[i].position;
+            let position = Vec2::new(
+                here.x.clamp(0.0, bounds.width),
+                here.y.clamp(0.0, bounds.height),
+            );
+            self.add_deposit(Material::Grain, position);
+            if let Some(field) = self.deposits.last_mut() {
+                field.amount = 0;
+            }
+            fields += 1;
         }
     }
 
@@ -590,7 +627,7 @@ mod tests {
     #[test]
     fn new_world_has_every_material() {
         let w = world();
-        for material in Material::ALL {
+        for material in Material::ALL.into_iter().filter(|m| !m.is_planted()) {
             assert!(w.deposits.iter().any(|d| d.material == material));
         }
         let home = w.people[0].home;
@@ -635,6 +672,34 @@ mod tests {
             before, after,
             "gathering moves materials, never creates them"
         );
+    }
+
+    #[test]
+    fn people_sow_and_harvest_fields_once_farming_is_known() {
+        let mut w = world();
+        for _ in 0..TICKS_PER_DAY * 3 {
+            w.step();
+        }
+        assert!(!w.deposits.iter().any(|d| d.material == Material::Grain));
+
+        w.knowledge = Era::Neolithic.threshold();
+        for _ in 0..TICKS_PER_DAY * 10 {
+            w.step();
+        }
+        assert!(w.era >= Era::Neolithic);
+        let fields = w
+            .deposits
+            .iter()
+            .filter(|d| d.material == Material::Grain)
+            .count();
+        assert!(fields > 0, "people should have sown fields");
+        assert!(fields <= MAX_FIELDS_PER_PERSON * w.people.len());
+        let grain: u32 = w
+            .people
+            .iter()
+            .filter_map(|p| p.inventory.get(&Material::Grain))
+            .sum();
+        assert!(grain > 0, "people should have harvested grain");
     }
 
     #[test]
@@ -686,7 +751,7 @@ mod tests {
         assert_eq!(migrated.time, w.time);
         assert_eq!(migrated.relationships, w.relationships);
         assert!(migrated.people.iter().all(|p| p.inventory.is_empty()));
-        for material in Material::ALL {
+        for material in Material::ALL.into_iter().filter(|m| !m.is_planted()) {
             assert!(migrated.deposits.iter().any(|d| d.material == material));
         }
         let ids: std::collections::BTreeSet<_> = migrated

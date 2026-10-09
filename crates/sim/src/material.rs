@@ -13,10 +13,12 @@ pub enum Material {
     Copper,
     Tin,
     Iron,
+    /// Not found in the wild: people plant and harvest it from fields.
+    Grain,
 }
 
 impl Material {
-    pub const ALL: [Material; 7] = [
+    pub const ALL: [Material; 8] = [
         Material::Wood,
         Material::Stone,
         Material::Flint,
@@ -24,6 +26,7 @@ impl Material {
         Material::Copper,
         Material::Tin,
         Material::Iron,
+        Material::Grain,
     ];
 
     pub fn name(self) -> &'static str {
@@ -35,6 +38,7 @@ impl Material {
             Material::Copper => "Copper",
             Material::Tin => "Tin",
             Material::Iron => "Iron",
+            Material::Grain => "Grain",
         }
     }
 
@@ -48,6 +52,7 @@ impl Material {
             Material::Copper => "Copper ore",
             Material::Tin => "Tin ore",
             Material::Iron => "Iron ore",
+            Material::Grain => "Field",
         }
     }
 
@@ -55,7 +60,7 @@ impl Material {
     pub fn era(self) -> Era {
         match self {
             Material::Wood | Material::Stone | Material::Flint => Era::Primitive,
-            Material::Clay => Era::Neolithic,
+            Material::Clay | Material::Grain => Era::Neolithic,
             Material::Copper | Material::Tin => Era::BronzeAge,
             Material::Iron => Era::IronAge,
         }
@@ -70,15 +75,22 @@ impl Material {
             Material::Clay => 40,
             Material::Copper | Material::Tin => 30,
             Material::Iron => 50,
+            Material::Grain => 10,
         }
     }
 
-    /// Units a deposit regains each day. Only trees grow back.
+    /// Units a deposit regains each day. Only trees and fields grow back.
     pub fn regrowth_per_day(self) -> u32 {
         match self {
             Material::Wood => 1,
+            Material::Grain => 2,
             _ => 0,
         }
+    }
+
+    /// Whether people sow this material themselves instead of finding it.
+    pub fn is_planted(self) -> bool {
+        self == Material::Grain
     }
 
     /// How many deposits a new world scatters across the map. Common
@@ -92,6 +104,7 @@ impl Material {
             Material::Copper => 5,
             Material::Tin => 3,
             Material::Iron => 5,
+            Material::Grain => 0,
         }
     }
 
@@ -129,6 +142,8 @@ mod tests {
 
     #[test]
     fn every_material_appears_in_a_new_world() {
-        assert!(Material::ALL.iter().all(|m| m.scattered() > 0));
+        assert!(Material::ALL
+            .iter()
+            .all(|m| m.is_planted() || m.scattered() > 0));
     }
 }
