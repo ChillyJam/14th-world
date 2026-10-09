@@ -211,6 +211,14 @@ fn person_stats(ui: &mut egui::Ui, view: &WorldView, person: &PersonView) {
             "Knowledge",
             format!("{:.1} ({share:.0}% of all)", person.knowledge),
         );
+        ui.weak("Hunger");
+        ui.add(
+            egui::ProgressBar::new(person.hunger)
+                .desired_width(80.0)
+                .text(hunger_label(person.hunger)),
+        )
+        .on_hover_text(format!("Hunger {:.2}", person.hunger));
+        ui.end_row();
         stat(ui, "Has met", format!("{} people", person.acquaintances));
         stat(ui, "Carrying", format_inventory(&person.inventory));
         stat(ui, "Position", format!("{:.0}, {:.0}", person.x, person.y));
@@ -253,6 +261,15 @@ fn person_stats(ui: &mut egui::Ui, view: &WorldView, person: &PersonView) {
                 ui.end_row();
             }
         });
+}
+
+fn hunger_label(hunger: f32) -> &'static str {
+    match hunger {
+        h if h < 0.25 => "Full",
+        h if h < 0.5 => "Peckish",
+        h if h < 0.8 => "Hungry",
+        _ => "Starving",
+    }
 }
 
 fn animal_stats(ui: &mut egui::Ui, animal: &AnimalView) {
@@ -405,6 +422,7 @@ mod tests {
             y,
             born_tick: 0,
             knowledge: 0.0,
+            hunger: 0.0,
             acquaintances: 0,
             inventory: vec![],
         };

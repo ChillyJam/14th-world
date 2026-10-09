@@ -49,6 +49,8 @@ pub struct PersonView {
     pub y: f32,
     pub born_tick: u64,
     pub knowledge: f64,
+    /// 0.0 = full, 1.0 = starving.
+    pub hunger: f32,
     /// Everyone this person has ever met, including bonds too weak to send.
     pub acquaintances: u32,
     /// Materials carried, in [`Material`] order. Only those with a count.
@@ -107,6 +109,7 @@ impl From<&World> for WorldView {
                     y: p.position.y,
                     born_tick: p.born_tick,
                     knowledge: p.knowledge,
+                    hunger: p.hunger,
                     acquaintances: acquaintances.get(&p.id).copied().unwrap_or(0),
                     inventory: p.inventory.iter().map(|(&m, &n)| (m, n)).collect(),
                 })
