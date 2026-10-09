@@ -5,6 +5,11 @@ wander a world with day/night cycles and animals. As they meet, they form
 relationships and learn from each other, and their collective knowledge
 slowly carries them from the Primitive era towards the Modern day.
 
+The world is scattered with materials: trees, rocks and flint from the start,
+then clay, copper, tin and iron ore that people can only work once they reach
+the right era. People gather from deposits they pass. Trees grow back, but
+everything dug from the ground eventually runs out.
+
 The server is meant to run unattended for months. All state lives in SQLite,
 so the world survives restarts and redeploys. A native desktop client
 connects to the server and renders the world live.
@@ -51,7 +56,9 @@ simulation is deterministic it regenerates exactly the events that were lost.
 Snapshots carry a format version (`sim::SNAPSHOT_VERSION`). If you change the
 shape of `World`, bump it. The server refuses to load a snapshot with a
 different version rather than misreading it, so a long-running world is never
-silently corrupted. Add a migration path before deploying such a change.
+silently corrupted. Add a migration path before deploying such a change: keep
+the old layout in a module (see `v1` in `crates/sim/src/world.rs`) and convert
+it in `World::from_snapshot`.
 
 ## Getting started
 
@@ -89,9 +96,11 @@ cargo run --bin world-server          # terminal 1, listens on port 8080
 cargo run --bin world-client          # terminal 2, opens a window
 ```
 
-Click a person or animal to see its stats. For people that's age, knowledge,
-whether they're asleep and who they're close to. Press Esc or click empty
-ground to close the panel.
+Click a person, animal or material deposit to see its stats. For people that's
+age, knowledge, whether they're asleep, what they're carrying and who they're
+close to. For deposits it's how much is left and whether it can be gathered
+yet. Trees are drawn as dark green dots and everything else as squares, and
+used-up deposits fade out. Press Esc or click empty ground to close the panel.
 
 The world is stored in `data/world.db`. Stop the server with Ctrl+C and it
 saves before exiting. Closing the client leaves the world running, and the
@@ -148,11 +157,12 @@ and Linux, on every pull request.
 ## Roadmap
 
 The scaffold gives you movement, day/night, meetings, relationships,
-knowledge and eras. Next steps:
+knowledge, eras and materials. Next steps:
 
 - Births, ageing and death, so the population can grow
 - Needs (food, shelter) and animals as a food source
-- Terrain, resources and settlements
+- Terrain and settlements
+- Using gathered materials: tools, shelter and crafting
 - Discoveries as a tech tree instead of a single knowledge number
 - A spatial index for encounters once populations grow (currently O(n²))
 - Delta-encoded frames and viewport culling for large worlds

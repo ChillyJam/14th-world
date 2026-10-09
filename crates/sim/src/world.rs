@@ -3,13 +3,14 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Era, Rng, WorldTime, TICKS_PER_DAY};
+use crate::{Deposit, Era, Material, Rng, WorldTime, TICKS_PER_DAY};
 
 pub type EntityId = u64;
 
 /// Bump whenever [`World`]'s serialized layout changes. Snapshots written with
-/// a different version are refused rather than silently misread.
-pub const SNAPSHOT_VERSION: u32 = 2;
+/// an unknown version are refused rather than silently misread; older known
+/// versions are migrated in [`World::from_snapshot`].
+pub const SNAPSHOT_VERSION: u32 = 3;
 
 const INITIAL_PEOPLE: usize = 4;
 const INITIAL_ANIMALS: usize = 24;
@@ -31,6 +32,10 @@ const FORAGE_THRESHOLD: f32 = 0.5;
 const FORAGE_CHANCE: f32 = 0.01;
 /// How much hunger one meal takes away.
 const MEAL: f32 = 0.4;
+/// How close a person has to be to a deposit to gather from it.
+const GATHER_RADIUS: f32 = 8.0;
+/// Chance per waking tick that a person next to a deposit gathers one unit.
+const GATHER_CHANCE: f32 = 0.05;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Vec2 {
@@ -75,6 +80,8 @@ pub struct Person {
     pub knowledge: f64,
     /// 0.0 = full, 1.0 = starving.
     pub hunger: f32,
+    /// Materials this person has gathered and is carrying.
+    pub inventory: BTreeMap<Material, u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -155,6 +162,7 @@ pub struct World {
     pub knowledge: f64,
     pub people: Vec<Person>,
     pub animals: Vec<Animal>,
+    pub deposits: Vec<Deposit>,
     /// Keyed by `(lower id, higher id)`.
     relationships: BTreeMap<(EntityId, EntityId), Relationship>,
     rng: Rng,
@@ -170,6 +178,7 @@ impl World {
             knowledge: 0.0,
             people: Vec::new(),
             animals: Vec::new(),
+            deposits: Vec::new(),
             relationships: BTreeMap::new(),
             rng: Rng::new(seed),
             next_id: 1,
@@ -192,6 +201,7 @@ impl World {
                 target: position,
                 knowledge: 0.0,
                 hunger: 0.0,
+                inventory: BTreeMap::new(),
             });
         }
 
@@ -214,7 +224,42 @@ impl World {
             });
         }
 
+        world.spawn_deposits(centre);
         world
+    }
+
+    /// Scatter material deposits across the map, plus a few within reach of
+    /// `home` so the first people have something to gather.
+    fn spawn_deposits(&mut self, home: Vec2) {
+        let bounds = self.config;
+        for material in Material::ALL {
+            for _ in 0..material.near_home() {
+                let position = Vec2::new(
+                    (home.x + self.rng.range_f32(-WANDER_RADIUS, WANDER_RADIUS))
+                        .clamp(0.0, bounds.width),
+                    (home.y + self.rng.range_f32(-WANDER_RADIUS, WANDER_RADIUS))
+                        .clamp(0.0, bounds.height),
+                );
+                self.add_deposit(material, position);
+            }
+            for _ in 0..material.scattered() {
+                let position = Vec2::new(
+                    self.rng.range_f32(0.0, bounds.width),
+                    self.rng.range_f32(0.0, bounds.height),
+                );
+                self.add_deposit(material, position);
+            }
+        }
+    }
+
+    fn add_deposit(&mut self, material: Material, position: Vec2) {
+        let id = self.alloc_id();
+        self.deposits.push(Deposit {
+            id,
+            material,
+            position,
+            amount: material.capacity(),
+        });
     }
 
     pub fn relationships(&self) -> &BTreeMap<(EntityId, EntityId), Relationship> {
@@ -256,6 +301,14 @@ impl World {
                 }
             }
             self.encounters(&mut events);
+            self.gather();
+        }
+
+        if self.time.tick.is_multiple_of(TICKS_PER_DAY) {
+            for deposit in &mut self.deposits {
+                let regrown = deposit.amount + deposit.material.regrowth_per_day();
+                deposit.amount = regrown.min(deposit.material.capacity());
+            }
         }
 
         for animal in &mut self.animals {
@@ -322,16 +375,41 @@ impl World {
         }
     }
 
+    /// People standing next to a deposit their era can work sometimes take a
+    /// unit from it. When several are in reach they use the nearest.
+    fn gather(&mut self) {
+        let era = self.era;
+        for person in &mut self.people {
+            if !self.rng.chance(GATHER_CHANCE) {
+                continue;
+            }
+            let here = person.position;
+            let nearest = self
+                .deposits
+                .iter_mut()
+                .filter(|d| d.amount > 0 && d.material.era() <= era)
+                .map(|d| (d.position.distance(here), d))
+                .filter(|(dist, _)| *dist <= GATHER_RADIUS)
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            if let Some((_, deposit)) = nearest {
+                deposit.amount -= 1;
+                *person.inventory.entry(deposit.material).or_default() += 1;
+            }
+        }
+    }
+
     pub fn to_snapshot(&self) -> Result<Vec<u8>, SnapshotError> {
         Ok(postcard::to_stdvec(&(SNAPSHOT_VERSION, self))?)
     }
 
     pub fn from_snapshot(bytes: &[u8]) -> Result<Self, SnapshotError> {
         let (version, rest): (u32, &[u8]) = postcard::take_from_bytes(bytes)?;
-        if version != SNAPSHOT_VERSION {
-            return Err(SnapshotError::UnsupportedVersion { found: version });
+        match version {
+            1 => Ok(postcard::from_bytes::<v1::World>(rest)?.into()),
+            2 => Ok(postcard::from_bytes::<v2::World>(rest)?.into()),
+            SNAPSHOT_VERSION => Ok(postcard::from_bytes(rest)?),
+            found => Err(SnapshotError::UnsupportedVersion { found }),
         }
-        Ok(postcard::from_bytes(rest)?)
     }
 
     fn alloc_id(&mut self) -> EntityId {
@@ -350,6 +428,136 @@ impl World {
             .collect();
         name[..1].make_ascii_uppercase();
         name
+    }
+}
+
+/// The snapshot layout before materials existed, kept so worlds saved by
+/// older servers carry on where they left off.
+mod v1 {
+    use super::*;
+
+    #[derive(Serialize, Deserialize)]
+    pub struct Person {
+        pub id: EntityId,
+        pub name: String,
+        pub born_tick: u64,
+        pub home: Vec2,
+        pub position: Vec2,
+        pub target: Vec2,
+        pub knowledge: f64,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    pub struct World {
+        pub config: WorldConfig,
+        pub time: WorldTime,
+        pub era: Era,
+        pub knowledge: f64,
+        pub people: Vec<Person>,
+        pub animals: Vec<Animal>,
+        pub relationships: BTreeMap<(EntityId, EntityId), Relationship>,
+        pub rng: Rng,
+        pub next_id: EntityId,
+    }
+
+    /// Everyone starts empty-handed, and deposits are laid out around the
+    /// founders' home just as in a new world.
+    impl From<World> for super::World {
+        fn from(old: World) -> Self {
+            let centre = Vec2::new(old.config.width / 2.0, old.config.height / 2.0);
+            let home = old.people.first().map_or(centre, |p| p.home);
+            let mut world = Self {
+                config: old.config,
+                time: old.time,
+                era: old.era,
+                knowledge: old.knowledge,
+                people: old
+                    .people
+                    .into_iter()
+                    .map(|p| super::Person {
+                        id: p.id,
+                        name: p.name,
+                        born_tick: p.born_tick,
+                        home: p.home,
+                        position: p.position,
+                        target: p.target,
+                        knowledge: p.knowledge,
+                        hunger: 0.0,
+                        inventory: BTreeMap::new(),
+                    })
+                    .collect(),
+                animals: old.animals,
+                deposits: Vec::new(),
+                relationships: old.relationships,
+                rng: old.rng,
+                next_id: old.next_id,
+            };
+            world.spawn_deposits(home);
+            world
+        }
+    }
+}
+
+/// The snapshot layout before hunger existed.
+mod v2 {
+    use super::*;
+
+    #[derive(Serialize, Deserialize)]
+    pub struct Person {
+        pub id: EntityId,
+        pub name: String,
+        pub born_tick: u64,
+        pub home: Vec2,
+        pub position: Vec2,
+        pub target: Vec2,
+        pub knowledge: f64,
+        pub inventory: BTreeMap<Material, u32>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    pub struct World {
+        pub config: WorldConfig,
+        pub time: WorldTime,
+        pub era: Era,
+        pub knowledge: f64,
+        pub people: Vec<Person>,
+        pub animals: Vec<Animal>,
+        pub deposits: Vec<Deposit>,
+        pub relationships: BTreeMap<(EntityId, EntityId), Relationship>,
+        pub rng: Rng,
+        pub next_id: EntityId,
+    }
+
+    /// Everyone starts well fed.
+    impl From<World> for super::World {
+        fn from(old: World) -> Self {
+            Self {
+                config: old.config,
+                time: old.time,
+                era: old.era,
+                knowledge: old.knowledge,
+                people: old
+                    .people
+                    .into_iter()
+                    .map(|p| super::Person {
+                        id: p.id,
+                        name: p.name,
+                        born_tick: p.born_tick,
+                        home: p.home,
+                        position: p.position,
+                        target: p.target,
+                        knowledge: p.knowledge,
+                        hunger: 0.0,
+                        inventory: p.inventory,
+                    })
+                    .collect(),
+                animals: old.animals,
+                deposits: old.deposits,
+                relationships: old.relationships,
+                rng: old.rng,
+                next_id: old.next_id,
+            }
+        }
     }
 }
 
@@ -386,7 +594,6 @@ fn wander(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TICKS_PER_DAY;
 
     fn world() -> World {
         World::new(1234, WorldConfig::default())
@@ -488,5 +695,119 @@ mod tests {
             World::from_snapshot(&bytes),
             Err(SnapshotError::UnsupportedVersion { .. })
         ));
+    }
+
+    #[test]
+    fn new_world_has_every_material() {
+        let w = world();
+        for material in Material::ALL {
+            assert!(w.deposits.iter().any(|d| d.material == material));
+        }
+        let home = w.people[0].home;
+        assert!(
+            w.deposits
+                .iter()
+                .any(|d| d.material == Material::Wood
+                    && d.position.distance(home) < 2.0 * WANDER_RADIUS),
+            "the founders should have trees nearby"
+        );
+    }
+
+    #[test]
+    fn people_gather_only_what_their_era_can_work() {
+        let total = |w: &World, m: Material| -> u32 {
+            let held: u32 = w.people.iter().filter_map(|p| p.inventory.get(&m)).sum();
+            let left: u32 = w
+                .deposits
+                .iter()
+                .filter(|d| d.material == m)
+                .map(|d| d.amount)
+                .sum();
+            held + left
+        };
+        let mut w = world();
+        let before: Vec<u32> = Material::ALL.iter().map(|&m| total(&w, m)).collect();
+        // Stop just before the first regrowth, so totals are conserved.
+        for _ in 0..TICKS_PER_DAY - 1 {
+            w.step();
+        }
+        assert_eq!(w.era, Era::Primitive);
+        let gathered: u32 = w.people.iter().flat_map(|p| p.inventory.values()).sum();
+        assert!(
+            gathered > 0,
+            "the founders should gather something on day one"
+        );
+        for p in &w.people {
+            assert!(p.inventory.keys().all(|m| m.era() == Era::Primitive));
+        }
+        let after: Vec<u32> = Material::ALL.iter().map(|&m| total(&w, m)).collect();
+        assert_eq!(
+            before, after,
+            "gathering moves materials, never creates them"
+        );
+    }
+
+    #[test]
+    fn trees_grow_back_but_rocks_do_not() {
+        let mut w = world();
+        for d in &mut w.deposits {
+            d.amount = 0;
+        }
+        for _ in 0..TICKS_PER_DAY {
+            w.step();
+        }
+        for d in &w.deposits {
+            assert_eq!(d.amount, d.material.regrowth_per_day(), "{:?}", d.material);
+        }
+    }
+
+    #[test]
+    fn migrates_v1_snapshots() {
+        let mut w = world();
+        for _ in 0..TICKS_PER_DAY {
+            w.step();
+        }
+        let old = v1::World {
+            config: w.config,
+            time: w.time,
+            era: w.era,
+            knowledge: w.knowledge,
+            people: w
+                .people
+                .iter()
+                .map(|p| v1::Person {
+                    id: p.id,
+                    name: p.name.clone(),
+                    born_tick: p.born_tick,
+                    home: p.home,
+                    position: p.position,
+                    target: p.target,
+                    knowledge: p.knowledge,
+                })
+                .collect(),
+            animals: w.animals.clone(),
+            relationships: w.relationships.clone(),
+            rng: w.rng.clone(),
+            next_id: w.next_id,
+        };
+        let bytes = postcard::to_stdvec(&(1u32, old)).unwrap();
+        let mut migrated = World::from_snapshot(&bytes).unwrap();
+
+        assert_eq!(migrated.time, w.time);
+        assert_eq!(migrated.relationships, w.relationships);
+        assert!(migrated.people.iter().all(|p| p.inventory.is_empty()));
+        for material in Material::ALL {
+            assert!(migrated.deposits.iter().any(|d| d.material == material));
+        }
+        let ids: std::collections::BTreeSet<_> = migrated
+            .people
+            .iter()
+            .map(|p| p.id)
+            .chain(migrated.animals.iter().map(|a| a.id))
+            .chain(migrated.deposits.iter().map(|d| d.id))
+            .collect();
+        let entities = migrated.people.len() + migrated.animals.len() + migrated.deposits.len();
+        assert_eq!(ids.len(), entities, "deposit ids must not clash");
+        migrated.step();
     }
 }

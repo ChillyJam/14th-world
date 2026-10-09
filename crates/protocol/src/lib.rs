@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use sim::{EntityId, Era, Species, World};
+use sim::{EntityId, Era, Material, Species, World};
 
 pub const PROTOCOL_VERSION: u32 = 3;
 
@@ -37,6 +37,7 @@ pub struct WorldView {
     pub knowledge: f64,
     pub people: Vec<PersonView>,
     pub animals: Vec<AnimalView>,
+    pub deposits: Vec<DepositView>,
     pub bonds: Vec<BondView>,
 }
 
@@ -52,6 +53,8 @@ pub struct PersonView {
     pub hunger: f32,
     /// Everyone this person has ever met, including bonds too weak to send.
     pub acquaintances: u32,
+    /// Materials carried, in [`Material`] order. Only those with a count.
+    pub inventory: Vec<(Material, u32)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -60,6 +63,15 @@ pub struct AnimalView {
     pub species: Species,
     pub x: f32,
     pub y: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DepositView {
+    pub id: EntityId,
+    pub material: Material,
+    pub x: f32,
+    pub y: f32,
+    pub amount: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -99,6 +111,7 @@ impl From<&World> for WorldView {
                     knowledge: p.knowledge,
                     hunger: p.hunger,
                     acquaintances: acquaintances.get(&p.id).copied().unwrap_or(0),
+                    inventory: p.inventory.iter().map(|(&m, &n)| (m, n)).collect(),
                 })
                 .collect(),
             animals: world
@@ -109,6 +122,17 @@ impl From<&World> for WorldView {
                     species: a.species,
                     x: a.position.x,
                     y: a.position.y,
+                })
+                .collect(),
+            deposits: world
+                .deposits
+                .iter()
+                .map(|d| DepositView {
+                    id: d.id,
+                    material: d.material,
+                    x: d.position.x,
+                    y: d.position.y,
+                    amount: d.amount,
                 })
                 .collect(),
             bonds: world
