@@ -62,6 +62,18 @@ silently corrupted. Add a migration path before deploying such a change.
 ### Run locally
 
 ```sh
+make build                            # build the server and client
+make run                              # build, then start the server and a client
+```
+
+`make run` keeps the server in the foreground and opens the client window
+alongside it. Use `make run-server` or `make run-client` to start just one,
+and add `PROFILE=dev` for quicker unoptimised builds. On Windows, `make` needs
+a POSIX shell such as Git Bash on `PATH`.
+
+Without `make`, run each binary in its own terminal:
+
+```sh
 cargo run --bin world-server          # terminal 1, listens on port 8080
 cargo run --bin world-client          # terminal 2, opens a window
 ```
