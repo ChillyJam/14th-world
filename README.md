@@ -12,29 +12,28 @@ the right era. People gather from deposits they pass. Trees and foraged plants g
 everything dug from the ground eventually runs out.
 
 The server is meant to run unattended for months. All state lives in SQLite,
-so the world survives restarts and redeploys. A native desktop client
-connects to the server and renders the world live.
+so the world survives restarts and redeploys. The server also serves a web
+page that renders the world live in any browser.
 
 ## Architecture
 
 ```
 ┌──────────────── server (Rust, tokio + axum) ────────────────┐
 │                                                             │
-│  engine ── World::step() at TICK_RATE_HZ ──► watch channel ─┼──► /ws  (binary postcard frames)
+│  engine ── World::step() at TICK_RATE_HZ ──► watch channel ─┼──► /ws  (JSON frames)       
 │    │                                                        │       │
 │    └── every SNAPSHOT_INTERVAL_SECS ──► SQLite (WAL)        │       │
 │          snapshots + append-only event log                  │       │
 └─────────────────────────────────────────────────────────────┘       │
                                                                       ▼
-                          desktop: world-client (Rust, egui) ── 2D renderer
+                          browser: GET /  (canvas 2D renderer, one HTML file)
 ```
 
 | Crate | What it does |
 | --- | --- |
 | [`crates/sim`](crates/sim) | The simulation itself. Pure and deterministic: no I/O, no clocks, seeded RNG. The same seed and number of steps always give the same world. |
-| [`crates/protocol`](crates/protocol) | Messages between server and client, shared by both so they can't drift apart. Encoded with [postcard](https://docs.rs/postcard). |
-| [`crates/server`](crates/server) | Runs the tick loop, persists to SQLite ([sqlx](https://docs.rs/sqlx)) and streams frames over WebSocket ([axum](https://docs.rs/axum)). Headless. |
-| [`crates/client`](crates/client) | Native desktop client for Windows, macOS and Linux, built with [egui](https://www.egui.rs). Connects to a server and draws the world. |
+| [`crates/protocol`](crates/protocol) | Messages between server and browser, as JSON. A catalog of materials, species and eras is sent on connect so the page never duplicates the rules. |
+| [`crates/server`](crates/server) | Runs the tick loop, persists to SQLite ([sqlx](https://docs.rs/sqlx)) and streams frames over WebSocket ([axum](https://docs.rs/axum)). Also serves the web client from [`assets/index.html`](crates/server/assets/index.html), compiled into the binary. |
 
 ### Time
 
@@ -70,32 +69,19 @@ it in `World::from_snapshot`.
 ### Run locally
 
 ```sh
-make build                            # build the server and client
-make run                              # build, then start the server and a client
+make run                              # build and start the server
 ```
 
-`make run` keeps the server in the foreground and opens the client window
-alongside it. Use `make run-server` or `make run-client` to start just one,
-and add `PROFILE=dev` for quicker unoptimised builds.
-
-On Windows, use `make.cmd` instead. It needs nothing but Rust and works from
-both Command Prompt and PowerShell:
+Then open <http://localhost:8080>. Add `PROFILE=dev` for a quicker unoptimised
+build. On Windows, use `make.cmd` instead; it needs nothing but Rust and works
+from both Command Prompt and PowerShell:
 
 ```powershell
-.\make build                          # build the server and client
-.\make run                            # build, then start the server and a client
-.\make run-client my-server.example:8080
+.\make run                            # build and start the server
 .\make run -Profile dev               # quicker unoptimised build
 ```
 
-(In Command Prompt you can drop the `.\`.)
-
-Without `make`, run each binary in its own terminal:
-
-```sh
-cargo run --bin world-server          # terminal 1, listens on port 8080
-cargo run --bin world-client          # terminal 2, opens a window
-```
+Without `make`: `cargo run --bin world-server`.
 
 Click a person, animal or material deposit to see its stats. For people that's
 age, knowledge, whether they're asleep, what they're carrying and who they're
@@ -104,22 +90,8 @@ yet. Trees are drawn as dark green dots and everything else as squares, and
 used-up deposits fade out. Press Esc or click empty ground to close the panel.
 
 The world is stored in `data/world.db`. Stop the server with Ctrl+C and it
-saves before exiting. Closing the client leaves the world running, and the
-client reconnects by itself if the server restarts.
-
-### Connect to another server
-
-Pass the server as an argument, or set `WORLD_SERVER`. Either a bare
-`host:port` or a full WebSocket URL works:
-
-```sh
-cargo run --release --bin world-client -- my-server.example:8080
-cargo run --release --bin world-client -- wss://world.example.com/ws
-```
-
-With no argument the client connects to `127.0.0.1:8080`. CI publishes
-release builds of the client for Windows, macOS and Linux as workflow
-artifacts.
+saves before exiting. Closing the page leaves the world running, and the page
+reconnects by itself if the server restarts.
 
 ### Run in Docker
 
@@ -152,8 +124,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-CI runs all of the above, plus release builds of the client on Windows, macOS
-and Linux, on every pull request.
+CI runs all of the above on every pull request.
 
 ## Roadmap
 

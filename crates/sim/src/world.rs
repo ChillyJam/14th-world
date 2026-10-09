@@ -105,6 +105,8 @@ pub enum Species {
 }
 
 impl Species {
+    pub const ALL: [Species; 3] = [Species::Deer, Species::Rabbit, Species::Wolf];
+
     pub fn name(self) -> &'static str {
         match self {
             Species::Deer => "Deer",

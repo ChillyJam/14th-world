@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>14th World</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0a0e23; overflow: hidden;
+    font: 13px system-ui, sans-serif; color: #fff; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #hud, #status { position: fixed; left: 12px; font-size: 14px; pointer-events: none;
+    text-shadow: 1px 1px 0 rgba(0,0,0,.55); }
+  #hud { top: 8px; }
+  #status { bottom: 10px; }
+  #panel { position: fixed; top: 36px; right: 12px; min-width: 220px; max-width: 320px;
+    padding: 10px 12px; background: rgba(24,26,36,.92); border: 1px solid #444;
+    border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
+  #panel[hidden] { display: none; }
+  #panel header { display: flex; justify-content: space-between; align-items: center;
+    font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+  #panel button { background: none; border: 0; color: #aaa; font-size: 16px; cursor: pointer; }
+  #panel table { border-collapse: collapse; width: 100%; }
+  #panel td { padding: 2px 0; vertical-align: middle; }
+  #panel td:first-child { color: #9a9ca8; padding-right: 12px; white-space: nowrap; }
+  #panel h4 { margin: 10px 0 4px; padding-top: 8px; border-top: 1px solid #444; font-size: 13px; }
+  .bar { display: inline-block; width: 80px; height: 10px; background: #3a3d4c;
+    border-radius: 3px; overflow: hidden; vertical-align: middle; }
+  .bar i { display: block; height: 100%; background: #e5a64a; }
+  .bar.bond i { background: #ff78a0; }
+</style>
+</head>
+<body>
+<canvas id="world"></canvas>
+<div id="hud"></div>
+<div id="status">Connecting…</div>
+<aside id="panel" hidden>
+  <header><span id="title"></span><button id="close" aria-label="Close">×</button></header>
+  <div id="stats"></div>
+</aside>
+<script>
+"use strict";
+
+const PROTOCOL_VERSION = 5;
+const NIGHT_SKY = [10, 14, 35];
+const DAY_GRASS = [104, 158, 86];
+const PERSON = "#ffd166";
+/** How close, in CSS pixels, a click has to land to pick something. */
+const PICK_RADIUS = 10;
+
+const ANIMALS = {
+  Deer: ["#a8743a", 5],
+  Rabbit: ["#e6e0d4", 3],
+  Wolf: ["#6b6f7a", 5],
+};
+const DEPOSITS = {
+  Wood: ["#2e5e34", 9],
+  Stone: ["#96968c", 7],
+  Flint: ["#3c404e", 5],
+  Clay: ["#b26240", 7],
+  Copper: ["#c47038", 6],
+  Tin: ["#c4ccd4", 6],
+  Iron: ["#783c32", 6],
+  Berries: ["#a82858", 6],
+  Mushrooms: ["#c4aa82", 5],
+  Roots: ["#8c683a", 5],
+  Grain: ["#d6b64a", 8],
+};
+
+const canvas = document.getElementById("world");
+const ctx = canvas.getContext("2d");
+const hud = document.getElementById("hud");
+const statusEl = document.getElementById("status");
+const panel = document.getElementById("panel");
+
+let catalog = null;
+let worldSize = [1, 1];
+let view = null;
+let selected = null;
+let layout = { scale: 1, x: 0, y: 0 };
+
+// ---- Connection ----------------------------------------------------------
+
+function connect() {
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${scheme}://${location.host}/ws`);
+  setStatus(`Connecting to ${location.host}…`);
+  ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.Welcome) {
+      const w = msg.Welcome;
+      if (w.protocol_version !== PROTOCOL_VERSION) {
+        setStatus("The server was updated. Reload the page.");
+        ws.close();
+        ws.onclose = null;
+        return;
+      }
+      catalog = w.catalog;
+      worldSize = [w.world_width, w.world_height];
+      setStatus(null);
+    } else if (msg.Frame && catalog) {
+      view = msg.Frame;
+      requestAnimationFrame(draw);
+    }
+  };
+  ws.onclose = () => {
+    setStatus("Disconnected. Reconnecting…");
+    setTimeout(connect, 2000);
+  };
+}
+
+function setStatus(text) {
+  statusEl.textContent = text ?? "";
+}
+
+// ---- Helpers -------------------------------------------------------------
+
+const material = (id) => catalog.materials.find((m) => m.id === id);
+const species = (id) => catalog.species.find((s) => s.id === id);
+const eraIndex = (id) => catalog.eras.findIndex((e) => e.id === id);
+const eraName = (id) => catalog.eras[eraIndex(id)].name;
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const pad = (n) => String(n).padStart(2, "0");
+
+function toScreen(x, y) {
+  return [layout.x + x * layout.scale, layout.y + y * layout.scale];
+}
+
+function formatDuration(ticks) {
+  const tpd = catalog.ticks_per_day;
+  let days = Math.floor(ticks / tpd);
+  const years = Math.floor(days / catalog.days_per_year);
+  days %= catalog.days_per_year;
+  const hours = Math.floor((ticks % tpd) / 60);
+  if (years > 0) return `${plural(years, "year")}, ${plural(days, "day")}`;
+  if (days > 0) return `${plural(days, "day")}, ${plural(hours, "hour")}`;
+  return plural(hours, "hour");
+}
+
+/** Matches the HUD, which counts years and days from 1. */
+function formatDate(tick) {
+  const day = Math.floor(tick / catalog.ticks_per_day);
+  const year = Math.floor(day / catalog.days_per_year);
+  return `year ${year + 1}, day ${(day % catalog.days_per_year) + 1}`;
+}
+
+/** Total weight of an inventory, in kilograms. */
+function carriedWeight(inventory) {
+  return inventory.reduce((sum, [id, n]) => sum + material(id).weight * n, 0);
+}
+
+function formatInventory(inventory) {
+  if (inventory.length === 0) return "Nothing";
+  return inventory.map(([id, n]) => `${n} ${material(id).name}`).join(", ");
+}
+
+function hungerLabel(h) {
+  if (h < 0.25) return "Full";
+  if (h < 0.5) return "Peckish";
+  if (h < 0.8) return "Hungry";
+  return "Starving";
+}
+
+function groundColour(daylight) {
+  const c = NIGHT_SKY.map((n, i) => Math.round(n + (DAY_GRASS[i] - n) * daylight));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+// ---- Drawing -------------------------------------------------------------
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(innerWidth * dpr);
+  canvas.height = Math.round(innerHeight * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function draw() {
+  if (!view || !catalog) return;
+  const w = innerWidth, h = innerHeight;
+  const [ww, wh] = worldSize;
+  const scale = Math.min(w / ww, h / wh);
+  layout = { scale, x: (w - ww * scale) / 2, y: (h - wh * scale) / 2 };
+
+  ctx.fillStyle = "#0a0e23";
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = groundColour(view.daylight);
+  ctx.fillRect(layout.x, layout.y, ww * scale, wh * scale);
+
+  for (const d of view.deposits) drawDeposit(d);
+
+  const positions = new Map(view.people.map((p) => [p.id, toScreen(p.x, p.y)]));
+  ctx.lineWidth = 1.5;
+  for (const bond of view.bonds) {
+    const a = positions.get(bond.a), b = positions.get(bond.b);
+    if (!a || !b) continue;
+    ctx.strokeStyle = `rgba(255,120,160,${Math.min(Math.max(bond.affinity, 0), 1)})`;
+    ctx.beginPath();
+    ctx.moveTo(a[0], a[1]);
+    ctx.lineTo(b[0], b[1]);
+    ctx.stroke();
+  }
+
+  for (const a of view.animals) {
+    const [colour, size] = ANIMALS[a.species];
+    const [x, y] = toScreen(a.x, a.y);
+    ctx.fillStyle = colour;
+    ctx.fillRect(x - size / 2, y - size / 2, size, size);
+  }
+
+  ctx.font = "11px system-ui, sans-serif";
+  ctx.textBaseline = "bottom";
+  for (const p of view.people) {
+    const [x, y] = positions.get(p.id);
+    ctx.fillStyle = PERSON;
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,.85)";
+    ctx.fillText(p.name, x + 6, y - 6);
+  }
+
+  hud.textContent =
+    `Year ${view.year + 1}, day ${view.day_of_year + 1} · ` +
+    `${pad(Math.floor(view.minute_of_day / 60))}:${pad(view.minute_of_day % 60)} · ` +
+    `${eraName(view.era)} · population ${view.people.length} · ` +
+    `knowledge ${view.knowledge.toFixed(0)}`;
+
+  const entity = selected === null ? null : find(selected);
+  if (selected !== null && !entity) selected = null; // it's gone from the world
+  if (entity) {
+    const [x, y] = toScreen(entity.item.x, entity.item.y);
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(x, y, 8, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  updatePanel(entity);
+}
+
+/** Trees and foraged plants are round, everything dug from the ground is
+ * square. Exhausted deposits fade out until (if ever) they grow back. */
+function drawDeposit(d) {
+  const info = material(d.material);
+  const [colour, size] = DEPOSITS[d.material];
+  const [x, y] = toScreen(d.x, d.y);
+  ctx.globalAlpha = d.amount === 0 ? 0.3 : 1;
+  ctx.fillStyle = colour;
+  if (d.material === "Wood" || info.forage) {
+    ctx.beginPath();
+    ctx.arc(x, y, size / 2, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    ctx.fillRect(x - size / 2, y - size / 2, size, size);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ---- Selection -----------------------------------------------------------
+
+function find(id) {
+  const person = view.people.find((p) => p.id === id);
+  if (person) return { kind: "person", item: person };
+  const animal = view.animals.find((a) => a.id === id);
+  if (animal) return { kind: "animal", item: animal };
+  const deposit = view.deposits.find((d) => d.id === id);
+  if (deposit) return { kind: "deposit", item: deposit };
+  return null;
+}
+
+/** The person or animal closest to the pointer, if any is within range.
+ * Otherwise the closest deposit, so a person standing by a tree stays easy
+ * to click. */
+function pick(px, py) {
+  const nearest = (items) => {
+    let best = null, bestDist = PICK_RADIUS;
+    for (const item of items) {
+      const [x, y] = toScreen(item.x, item.y);
+      const dist = Math.hypot(x - px, y - py);
+      if (dist <= bestDist) { best = item.id; bestDist = dist; }
+    }
+    return best;
+  };
+  return nearest([...view.people, ...view.animals]) ?? nearest(view.deposits);
+}
+
+canvas.addEventListener("click", (e) => {
+  if (!view || !catalog) return;
+  selected = pick(e.clientX, e.clientY);
+  draw();
+});
+canvas.addEventListener("mousemove", (e) => {
+  if (!view || !catalog) return;
+  canvas.style.cursor = pick(e.clientX, e.clientY) === null ? "default" : "pointer";
+});
+addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { selected = null; if (view) draw(); }
+});
+document.getElementById("close").addEventListener("click", () => {
+  selected = null;
+  if (view) draw();
+});
+addEventListener("resize", () => { resize(); if (view) draw(); });
+
+// ---- Stats panel ---------------------------------------------------------
+
+function el(tag, text) {
+  const node = document.createElement(tag);
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function bar(fraction, cls = "") {
+  const outer = el("span");
+  outer.className = `bar ${cls}`;
+  const inner = el("i");
+  inner.style.width = `${Math.min(Math.max(fraction, 0), 1) * 100}%`;
+  outer.append(inner);
+  return outer;
+}
+
+function row(table, label, value) {
+  const tr = el("tr");
+  const l = el("td", label);
+  const v = el("td");
+  if (value instanceof Node) v.append(value); else v.textContent = value;
+  tr.append(l, v);
+  table.append(tr);
+}
+
+function updatePanel(entity) {
+  if (!entity) { panel.hidden = true; return; }
+  const { kind, item } = entity;
+  const table = el("table");
+  let title;
+  if (kind === "person") {
+    title = item.name;
+    const asleep = view.daylight < 0.25;
+    const share = view.knowledge > 0 ? (item.knowledge / view.knowledge) * 100 : 0;
+    row(table, "Age", formatDuration(Math.max(view.tick - item.born_tick, 0)));
+    row(table, "Born", formatDate(item.born_tick));
+    row(table, "Status", asleep ? "Asleep" : "Awake");
+    row(table, "Knowledge", `${item.knowledge.toFixed(1)} (${share.toFixed(0)}% of all)`);
+    const hunger = el("span");
+    hunger.append(bar(item.hunger), " ", hungerLabel(item.hunger));
+    hunger.title = `Hunger ${item.hunger.toFixed(2)}`;
+    row(table, "Hunger", hunger);
+    row(table, "Has met", plural(item.acquaintances, "person").replace("persons", "people"));
+    row(table, "Carrying", formatInventory(item.inventory));
+    row(table, "Load", `${carriedWeight(item.inventory)} / ${catalog.carry_limit} kg`);
+    row(table, "Position", `${item.x.toFixed(0)}, ${item.y.toFixed(0)}`);
+  } else if (kind === "animal") {
+    const info = species(item.species);
+    title = `${info.name} #${item.id}`;
+    row(table, "Species", info.name);
+    row(table, "Speed", `${info.speed.toFixed(1)} per minute`);
+    row(table, "Position", `${item.x.toFixed(0)}, ${item.y.toFixed(0)}`);
+  } else {
+    const info = material(item.material);
+    title = `${info.deposit_name} #${item.id}`;
+    row(table, "Material", info.name);
+    row(table, "Left", `${item.amount} of ${info.capacity}`);
+    row(table, "Regrows", info.regrowth_per_day === 0 ? "Never" : `${info.regrowth_per_day} per day`);
+    row(table, "Gatherable",
+      eraIndex(info.era) <= eraIndex(view.era) ? "Yes" : `From the ${eraName(info.era)}`);
+    row(table, "Position", `${item.x.toFixed(0)}, ${item.y.toFixed(0)}`);
+  }
+
+  const children = [table];
+  if (kind === "person") {
+    const names = new Map(view.people.map((p) => [p.id, p.name]));
+    const bonds = view.bonds
+      .filter((b) => b.a === item.id || b.b === item.id)
+      .map((b) => ({ name: names.get(b.a === item.id ? b.b : b.a) ?? "?", bond: b }))
+      .sort((x, y) => y.bond.affinity - x.bond.affinity);
+    if (bonds.length > 0) {
+      const t = el("table");
+      for (const { name, bond } of bonds) {
+        const tr = el("tr");
+        const met = el("td", `met ${bond.encounters}×`);
+        met.title = `First met ${formatDate(bond.first_met)}`;
+        const aff = el("td");
+        aff.append(bar(bond.affinity, "bond"));
+        aff.title = `Affinity ${bond.affinity.toFixed(2)}`;
+        tr.append(el("td", name), aff, met);
+        t.append(tr);
+      }
+      children.push(el("h4", "Relationships"), t);
+    }
+  }
+
+  document.getElementById("title").textContent = title;
+  document.getElementById("stats").replaceChildren(...children);
+  panel.hidden = false;
+}
+
+resize();
+connect();
+</script>
+</body>
+</html>
