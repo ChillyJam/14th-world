@@ -1,0 +1,51 @@
+name: In progress label
+
+# Keeps the "in progress" label in step with work on an issue:
+# - added when a pull request that closes the issue is opened, as a backstop
+#   in case whoever picked the issue up didn't add it (see CLAUDE.md)
+# - removed when the issue is closed, which merging that pull request does
+
+on:
+  # pull_request_target so this also works for PRs from forks. It never checks
+  # out or runs the PR's code.
+  pull_request_target:
+    types: [opened, reopened, edited, ready_for_review]
+  issues:
+    types: [closed]
+
+permissions:
+  issues: write
+  pull-requests: read
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+  LABEL: in progress
+
+jobs:
+  add:
+    name: Label issues a PR closes
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.state == 'open'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr view "$PR" --json closingIssuesReferences \
+            --jq '.closingIssuesReferences[].number' |
+          while read -r issue; do
+            gh issue edit "$issue" --add-label "$LABEL"
+          done
+
+  remove:
+    name: Unlabel closed issue
+    if: >-
+      github.event_name == 'issues' &&
+      contains(github.event.issue.labels.*.name, 'in progress')
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          ISSUE: ${{ github.event.issue.number }}
+        run: gh issue edit "$ISSUE" --remove-label "$LABEL"
