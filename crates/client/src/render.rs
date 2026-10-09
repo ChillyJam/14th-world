@@ -327,7 +327,7 @@ fn animal_style(species: Species) -> (Color32, f32) {
     }
 }
 
-/// Trees are round, everything dug out of the ground is square. Exhausted
+/// Trees and foraged plants are round, everything dug out of the ground is square. Exhausted
 /// deposits fade out until (if ever) they grow back.
 fn draw_deposit(painter: &egui::Painter, deposit: &DepositView, centre: Pos2) {
     let (colour, size) = deposit_style(deposit.material);
@@ -336,7 +336,7 @@ fn draw_deposit(painter: &egui::Painter, deposit: &DepositView, centre: Pos2) {
     } else {
         colour
     };
-    if deposit.material == Material::Wood {
+    if deposit.material == Material::Wood || deposit.material.is_forage() {
         painter.circle_filled(centre, size / 2.0, colour);
     } else {
         let square = Rect::from_center_size(centre, Vec2::splat(size));
@@ -353,6 +353,9 @@ fn deposit_style(material: Material) -> (Color32, f32) {
         Material::Copper => (Color32::from_rgb(196, 112, 56), 6.0),
         Material::Tin => (Color32::from_rgb(196, 204, 212), 6.0),
         Material::Iron => (Color32::from_rgb(120, 60, 50), 6.0),
+        Material::Berries => (Color32::from_rgb(168, 40, 88), 6.0),
+        Material::Mushrooms => (Color32::from_rgb(196, 170, 130), 5.0),
+        Material::Roots => (Color32::from_rgb(140, 104, 58), 5.0),
     }
 }
 

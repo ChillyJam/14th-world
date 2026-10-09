@@ -218,24 +218,42 @@ impl World {
     /// Scatter material deposits across the map, plus a few within reach of
     /// `home` so the first people have something to gather.
     fn spawn_deposits(&mut self, home: Vec2) {
-        let bounds = self.config;
         for material in Material::ALL {
-            for _ in 0..material.near_home() {
-                let position = Vec2::new(
-                    (home.x + self.rng.range_f32(-WANDER_RADIUS, WANDER_RADIUS))
-                        .clamp(0.0, bounds.width),
-                    (home.y + self.rng.range_f32(-WANDER_RADIUS, WANDER_RADIUS))
-                        .clamp(0.0, bounds.height),
-                );
-                self.add_deposit(material, position);
+            self.spawn_material(material, home);
+        }
+    }
+
+    /// Worlds saved before a material existed get deposits of it laid out
+    /// around the founders' home, as in a new world.
+    fn add_missing_deposits(&mut self) {
+        let home = self.people.first().map_or(
+            Vec2::new(self.config.width / 2.0, self.config.height / 2.0),
+            |p| p.home,
+        );
+        for material in Material::ALL {
+            if !self.deposits.iter().any(|d| d.material == material) {
+                self.spawn_material(material, home);
             }
-            for _ in 0..material.scattered() {
-                let position = Vec2::new(
-                    self.rng.range_f32(0.0, bounds.width),
-                    self.rng.range_f32(0.0, bounds.height),
-                );
-                self.add_deposit(material, position);
-            }
+        }
+    }
+
+    fn spawn_material(&mut self, material: Material, home: Vec2) {
+        let bounds = self.config;
+        for _ in 0..material.near_home() {
+            let position = Vec2::new(
+                (home.x + self.rng.range_f32(-WANDER_RADIUS, WANDER_RADIUS))
+                    .clamp(0.0, bounds.width),
+                (home.y + self.rng.range_f32(-WANDER_RADIUS, WANDER_RADIUS))
+                    .clamp(0.0, bounds.height),
+            );
+            self.add_deposit(material, position);
+        }
+        for _ in 0..material.scattered() {
+            let position = Vec2::new(
+                self.rng.range_f32(0.0, bounds.width),
+                self.rng.range_f32(0.0, bounds.height),
+            );
+            self.add_deposit(material, position);
         }
     }
 
@@ -381,7 +399,11 @@ impl World {
         let (version, rest): (u32, &[u8]) = postcard::take_from_bytes(bytes)?;
         match version {
             1 => Ok(postcard::from_bytes::<v1::World>(rest)?.into()),
-            SNAPSHOT_VERSION => Ok(postcard::from_bytes(rest)?),
+            SNAPSHOT_VERSION => {
+                let mut world: Self = postcard::from_bytes(rest)?;
+                world.add_missing_deposits();
+                Ok(world)
+            }
             found => Err(SnapshotError::UnsupportedVersion { found }),
         }
     }
@@ -699,5 +721,15 @@ mod tests {
         let entities = migrated.people.len() + migrated.animals.len() + migrated.deposits.len();
         assert_eq!(ids.len(), entities, "deposit ids must not clash");
         migrated.step();
+    }
+
+    #[test]
+    fn snapshots_without_forage_get_it_added() {
+        let mut w = world();
+        w.deposits.retain(|d| !d.material.is_forage());
+        let loaded = World::from_snapshot(&w.to_snapshot().unwrap()).unwrap();
+        for material in Material::ALL {
+            assert!(loaded.deposits.iter().any(|d| d.material == material));
+        }
     }
 }
